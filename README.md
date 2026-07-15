@@ -41,7 +41,8 @@ For each patient, the pipeline:
 4. determines whether new or worsening acute decompensation occurred;
 5. assesses all six EASL-CLIF organ systems;
 6. identifies supported precipitants, such as bacterial infection;
-7. validates every note and OMOP record ID against the retrieval trace; and
+7. validates every cited note and OMOP record ID against the collected source
+   evidence; and
 8. applies deterministic Python scoring to produce ACLF presence, grade, and
    prognostic scores when the required inputs are available.
 
@@ -77,7 +78,7 @@ deliberately contrasting cases.
 | High-severity acute admission | ACLF present; three proven failures; grade bounded 3a–3b | Bilirubin 25.5 mg/dL, creatinine 4.26 mg/dL, and INR 3.85 established liver, kidney, and coagulation failure. The exact grade remained bounded because HE grade, MAP, and FiO2 were unavailable. |
 | Planned liver-transplant admission | No qualifying acute decompensation; no ACLF | The discharge summary documented no acute change. The pipeline did not convert peri-transplant abnormalities into native-liver ACLF. |
 
-Both outputs passed schema, temporal, deterministic-scoring, and citation-trace
+Both outputs passed schema, temporal, deterministic-scoring, and source-citation
 validation. The remaining uncertainty reflects missing source data rather than
 values filled in by the model.
 
@@ -93,27 +94,17 @@ Each patient JSON includes:
 - data-quality and missing-evidence fields;
 - deterministic ACLF presence and exact or bounded grade;
 - CLIF-C ACLF or CLIF-C AD score when all required inputs are available; and
-- a compact retrieval trace for audit and reproducibility.
+- traceable source records for audit and reproducibility.
 
-## The prompt
+## Clinical review task
 
-The easiest prompt to share with a clinician is
-[`docs/ACLF_AGENT_PROMPT.md`](docs/ACLF_AGENT_PROMPT.md). It explains the task
-in clinical language and shows the substantive evidence-gathering and
-assessment instructions.
-
-The production prompt is assembled from three sources so that the clinical
-criteria and output schema cannot silently drift apart:
-
-- `instructions.py`: evidence-gathering and assessment behavior;
-- `docs/ACLF_CLINICAL_REFERENCE.md`: EASL-CLIF clinical criteria; and
-- `schema.py`: the structured output contract.
-
-To print the exact rendered production prompt:
-
-```bash
-python show_prompt.py --phase both
-```
+The model is asked to review one patient with cirrhosis as a hepatology
+specialist: select one hospitalization with new or worsening acute
+decompensation, assess the six EASL-CLIF organ systems, identify supported
+precipitants, and cite the underlying clinical records. When required evidence
+is unavailable, the model must report the organ as indeterminate rather than
+assume a normal value. Deterministic Python code then assigns the final ACLF
+status and grade.
 
 ## Data and provenance
 
@@ -127,7 +118,6 @@ contract.
 
 | File | Purpose |
 |---|---|
-| `docs/ACLF_AGENT_PROMPT.md` | Clinician-facing explanation of the prompt |
 | `docs/ACLF_CLINICAL_REFERENCE.md` | Clinical criteria embedded in the production prompt |
 | `schema.py` | Strict structured assessment schema |
 | `scoring.py` | Deterministic ACLF grading and prognostic formulas |
