@@ -6,7 +6,7 @@ from pathlib import Path
 
 from schema import ACLFAssessment, build_format_instructions
 
-REFERENCE_PATH = Path(__file__).with_name("ACLF_CLINICAL_REFERENCE.md")
+REFERENCE_PATH = Path(__file__).resolve().parent / "docs" / "ACLF_CLINICAL_REFERENCE.md"
 
 GATHER_SYSTEM = """\
 You are a senior hepatologist gathering evidence for ACLF phenotyping.
