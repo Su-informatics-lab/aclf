@@ -1,0 +1,11 @@
+.DS_Store
+.idea/
+ACLF.pdf
+.venv/
+__pycache__/
+.pytest_cache/
+*.py[cod]
+logs/
+results/
+*.duckdb
+*.duckdb.wal
