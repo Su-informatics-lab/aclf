@@ -9,7 +9,7 @@
 #SBATCH --error=logs/aclf_ehr_%j.err
 
 set -euo pipefail
-module purge
+# Keep Quartz's default prerequisite modules (sqlite/gdbm/openblas).
 module load python/3.12.4
 cd /N/project/depot/hw56/aclf
 source .venv/bin/activate

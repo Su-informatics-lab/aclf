@@ -11,7 +11,8 @@
 
 set -euo pipefail
 
-module purge
+# Quartz's default module stack supplies sqlite/gdbm/openblas prerequisites;
+# `module purge` makes python/3.12.4 unloadable here.
 module load python/3.12.4
 
 cd /N/project/depot/hw56/aclf
