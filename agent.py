@@ -76,6 +76,41 @@ def _episode_anchor_error(
     return None
 
 
+def _assessment_references(model: ACLFAssessment):
+    yield from model.decompensation_evidence_references
+    for organ in model.organs:
+        yield from organ.evidence_references
+    for precipitant in model.precipitants:
+        yield from precipitant.evidence_references
+
+
+def _retrieval_reference_error(
+    model: BaseModel, retrieval_trace: list[dict[str, Any]]
+) -> str | None:
+    """Require every claimed record ID to have been retrieved for this run."""
+    if not isinstance(model, ACLFAssessment):
+        return None
+    allowed = {
+        str(source_id)
+        for item in retrieval_trace
+        for source_id in (item.get("source_ids") or [])
+    }
+    unsupported = sorted(
+        {
+            str(reference.source_id)
+            for reference in _assessment_references(model)
+            if reference.source_id is not None
+            and reference.source_type != "other"
+            and str(reference.source_id) not in allowed
+        }
+    )
+    if unsupported:
+        return "evidence source_ids were not retrieved in this run: " + ", ".join(
+            unsupported
+        )
+    return None
+
+
 def _stable_seed(*parts: Any) -> int:
     key = "|".join(str(part) for part in parts)
     digest = hashlib.sha256(key.encode("utf-8")).hexdigest()[:8]
@@ -118,6 +153,32 @@ class ACLFAgent:
     ) -> list[dict[str, Any]]:
         case_context = rag.case_context()
         extraction = rag.get_extraction()
+        evidence: list[dict[str, Any]] = []
+        for episode in (case_context.get("inpatient_episodes") or [])[:3]:
+            visit_id = episode.get("visit_occurrence_id")
+            start = _iso_date(episode.get("start_date"))
+            if visit_id is None or start is None:
+                continue
+            arguments = {
+                "concept": "aclf_core",
+                "date_start": start.isoformat(),
+                "date_end": (start + timedelta(days=7)).isoformat(),
+                "visit_occurrence_id": int(visit_id),
+                "limit": 50,
+            }
+            try:
+                core = await asyncio.to_thread(rag.query_labs, **arguments)
+            except Exception as exc:
+                logger.warning("Core-lab prefetch failed for visit %s: %s", visit_id, exc)
+                continue
+            evidence.append(
+                {
+                    "tool": "query_labs",
+                    "args": arguments,
+                    "result": json.dumps(core, default=str, ensure_ascii=False),
+                    "prefetched": True,
+                }
+            )
         messages: list[dict[str, Any]] = [
             {"role": "system", "content": GATHER_SYSTEM},
             {
@@ -125,13 +186,14 @@ class ACLFAgent:
                 "content": (
                     "=== VERIFIED CASE CONTEXT ===\n"
                     + json.dumps(case_context, indent=2, default=str)
+                    + "\n\n=== PREFETCHED CORE LAB EVIDENCE ===\n"
+                    + _format_evidence_context(evidence)
                     + "\n\n=== OPTIONAL PRIOR EXTRACTION ===\n"
                     + json.dumps(extraction, indent=2, default=str)[:12000]
                     + "\n\nGather the evidence needed for all six organ systems and precipitants."
                 ),
             },
         ]
-        evidence: list[dict[str, Any]] = []
         for round_index in range(max_rounds):
             try:
                 response = await self._client.chat.completions.create(
@@ -205,7 +267,10 @@ class ACLFAgent:
             json_schema=build_json_schema(ACLFAssessment),
             max_retries=self._config.max_retries,
             seed=seed + 100,
-            semantic_validator=lambda model: _episode_anchor_error(model, case_context),
+            semantic_validator=lambda model: (
+                _episode_anchor_error(model, case_context)
+                or _retrieval_reference_error(model, rag.retrieval_trace)
+            ),
         )
         assessment.sample_id = sample_id
         return assessment
@@ -284,4 +349,5 @@ __all__ = [
     "_stable_seed",
     "_format_evidence_context",
     "_episode_anchor_error",
+    "_retrieval_reference_error",
 ]

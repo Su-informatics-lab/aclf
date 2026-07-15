@@ -55,6 +55,12 @@ class EvidenceReference(StrictModel):
         description="Short verbatim note excerpt for narrative evidence, otherwise null."
     )
 
+    @model_validator(mode="after")
+    def validate_record_identifier(self) -> "EvidenceReference":
+        if self.source_type != "other" and not self.source_id:
+            raise ValueError(f"{self.source_type} evidence requires a source_id")
+        return self
+
 
 class OrganAssessment(StrictModel):
     """Assessment of one organ system using EASL-CLIF-C OF criteria."""
@@ -128,6 +134,14 @@ class OrganAssessment(StrictModel):
             and not self.clinical_finding
         ):
             raise ValueError("kidney scoring requires creatinine or an RRT finding")
+        if (
+            self.organ in {"liver", "kidney", "coagulation"}
+            and self.peak_value is not None
+            and self.peak_value_date is None
+        ):
+            raise ValueError(
+                f"peak_value_date is required when numeric {self.organ} evidence is scored"
+            )
         return self
 
 

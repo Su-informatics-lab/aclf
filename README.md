@@ -16,7 +16,10 @@ The implementation is a deliberately small adaptation of Agentic Delphi:
   ACLF-presence and grade bounds instead of assumed normal scores.
 
 Each schema-v1.1 result also records a compact retrieval trace and requires
-traceable evidence for any positive acute-decompensation assertion.
+traceable evidence for any positive acute-decompensation assertion. Core labs
+are prefetched deterministically for the leading episode candidates, and every
+note or OMOP source ID in the assessment must occur in that run's retrieval
+trace.
 
 See `PROVENANCE.md` for the verified identifier and dataset contracts.
 

@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from agent import ACLFAgent, _episode_anchor_error
+from agent import ACLFAgent, _episode_anchor_error, _retrieval_reference_error
 from config import ACLFConfig
 from tests.test_schema import valid_payload
 
@@ -45,11 +45,18 @@ class FakeCompletions:
 
 class FakeRAG:
     pid = 1030000000000001
+    retrieval_trace = [
+        {"source_ids": ["1001", "1002"]},
+    ]
 
     def case_context(self):
         return {
             "inpatient_episodes": [
-                {"start_date": "2026-01-01", "end_date": "2026-01-05"}
+                {
+                    "visit_occurrence_id": 10,
+                    "start_date": "2026-01-01",
+                    "end_date": "2026-01-05",
+                }
             ],
             "note_provenance": {"n_notes_found": 1},
         }
@@ -87,6 +94,8 @@ async def test_agent_uses_separate_gather_and_assess_calls(monkeypatch):
     assert "tools" in completions.calls[0]
     assert "response_format" not in completions.calls[0]
     assert completions.calls[-1]["response_format"]["type"] == "json_schema"
+    assert "PREFETCHED CORE LAB EVIDENCE" in completions.calls[0]["messages"][1]["content"]
+    assert "aclf_core" in completions.calls[0]["messages"][1]["content"]
 
 
 def test_episode_anchor_rejects_cross_admission_merge():
@@ -100,3 +109,10 @@ def test_episode_anchor_rejects_cross_admission_merge():
         {"inpatient_episodes": [{"start_date": "2026-01-01", "end_date": "2026-01-05"}]},
     )
     assert error and "exactly match" in error
+
+
+def test_unretrieved_evidence_id_is_rejected():
+    from schema import ACLFAssessment
+
+    assessment = ACLFAssessment.model_validate(valid_payload())
+    assert _retrieval_reference_error(assessment, [{"source_ids": ["1001"]}])

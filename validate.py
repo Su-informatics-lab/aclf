@@ -46,6 +46,12 @@ def validate_output(path: Path) -> tuple[list[str], dict[str, Any] | None]:
     trace = payload.get("retrieval_trace")
     if not isinstance(trace, list) or not trace:
         errors.append("retrieval_trace is missing or empty")
+    retrieved_ids = {
+        str(source_id)
+        for item in (trace or [])
+        if isinstance(item, dict)
+        for source_id in (item.get("source_ids") or [])
+    }
     if (
         assessment.has_acute_decompensation
         and not assessment.decompensation_evidence_references
@@ -57,6 +63,28 @@ def validate_output(path: Path) -> tuple[list[str], dict[str, Any] | None]:
         for reference in organ.evidence_references:
             if reference.source_type == "clinical_note" and not reference.source_id:
                 errors.append(f"{organ.organ}: note evidence lacks report_id")
+    references = list(assessment.decompensation_evidence_references)
+    references.extend(
+        reference
+        for organ in assessment.organs
+        for reference in organ.evidence_references
+    )
+    references.extend(
+        reference
+        for precipitant in assessment.precipitants
+        for reference in precipitant.evidence_references
+    )
+    unsupported = sorted(
+        {
+            str(reference.source_id)
+            for reference in references
+            if reference.source_id is not None
+            and reference.source_type != "other"
+            and str(reference.source_id) not in retrieved_ids
+        }
+    )
+    if unsupported:
+        errors.append("evidence IDs absent from retrieval_trace: " + ", ".join(unsupported))
     return errors, payload
 
 
