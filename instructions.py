@@ -38,6 +38,13 @@ WBC, sodium, transplant/procedure context, and precipitants. An undated note
 cannot establish an acute finding. Never infer normality from missing data.
 Stop once those questions have been investigated and identify the chosen visit
 ID and exact admission/discharge dates in the evidence summary.
+
+After selecting a visit, prefer one query_labs call with concept="aclf_core",
+that visit_occurrence_id, and the admission-to-admission+7-day window. It
+returns traceable representatives for verified core concepts. It does not pair
+PaO2/SpO2 with FiO2; only calculate an oxygenation ratio when timestamps and
+units establish a valid pair. Use remaining calls for narrative organ evidence,
+acute-decompensation eligibility, procedures, medications, and precipitants.
 """
 
 ASSESS_SYSTEM_TEMPLATE = """\
@@ -60,6 +67,10 @@ without a new/worsening cirrhosis decompensation do not satisfy acute
 decompensation. Do not count findings occurring after liver transplantation as
 ACLF findings of the native cirrhotic liver. If the chart explicitly says there
 were no acute changes, treat that as evidence against acute decompensation.
+GI hemorrhage means bleeding into the gastrointestinal lumen (for example,
+hematemesis, melena, hematochezia, or endoscopically documented bleeding).
+An abdominal-wall, access-site, or paracentesis-site hematoma is not GI
+hemorrhage.
 
 For a claim that no precipitant was identified, calibrate confidence to the
 documented workup. Absence of retrieved evidence alone is not a systematic

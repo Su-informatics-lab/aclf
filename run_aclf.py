@@ -92,7 +92,7 @@ async def process_patient(
         provenance = rag.case_context()
         assessment = await agent.assess(rag=rag, sample_id=sample_id)
         payload = {
-            "schema_version": "1.0",
+            "schema_version": "1.1",
             "sample_id": sample_id,
             "provenance": provenance,
             "retrieval_trace": rag.retrieval_trace,

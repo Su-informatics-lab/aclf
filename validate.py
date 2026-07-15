@@ -46,6 +46,11 @@ def validate_output(path: Path) -> tuple[list[str], dict[str, Any] | None]:
     trace = payload.get("retrieval_trace")
     if not isinstance(trace, list) or not trace:
         errors.append("retrieval_trace is missing or empty")
+    if (
+        assessment.has_acute_decompensation
+        and not assessment.decompensation_evidence_references
+    ):
+        errors.append("acute decompensation lacks traceable supporting evidence")
     for organ in assessment.organs:
         if organ.clif_score is not None and not organ.evidence_references:
             errors.append(f"{organ.organ}: scored without evidence references")
@@ -64,6 +69,7 @@ def summarize(output_dir: Path) -> tuple[dict[str, Any], int]:
     grades: Counter[str] = Counter()
     quality: Counter[str] = Counter()
     statuses: Counter[str] = Counter()
+    presence: Counter[str] = Counter()
     missing: Counter[str] = Counter()
     failures: dict[str, list[str]] = {}
     for path in files:
@@ -76,6 +82,8 @@ def summarize(output_dir: Path) -> tuple[dict[str, Any], int]:
         assessment = payload["assessment"]
         grades[scores["aclf_grade"]] += 1
         statuses[scores["scoring_status"]] += 1
+        value = scores.get("aclf_present")
+        presence["indeterminate" if value is None else str(value).lower()] += 1
         quality[assessment["data_quality"]] += 1
         missing.update(scores.get("missing_organs") or [])
     error_files = list(Path(output_dir).glob("*.error.json"))
@@ -87,6 +95,7 @@ def summarize(output_dir: Path) -> tuple[dict[str, Any], int]:
         "n_runtime_errors": len(error_files),
         "aclf_grades": dict(grades),
         "scoring_status": dict(statuses),
+        "aclf_presence": dict(presence),
         "data_quality": dict(quality),
         "missing_organs": dict(missing),
         "validation_failures": failures,

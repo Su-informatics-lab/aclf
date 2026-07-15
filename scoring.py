@@ -65,6 +65,24 @@ def _mortality_label(grade: str) -> str:
     }[grade]
 
 
+def _grade_from_complete_scores(scores: dict[str, int]) -> str:
+    failed = [name for name, score in scores.items() if score == 3]
+    n_fail = len(failed)
+    if n_fail == 0:
+        return "no_aclf"
+    if n_fail == 1:
+        if failed[0] == "kidney":
+            return "1a"
+        if scores["kidney"] == 2 or scores["brain"] == 2:
+            return "1b"
+        return "no_aclf"
+    if n_fail == 2:
+        return "2"
+    if n_fail == 3:
+        return "3a"
+    return "3b"
+
+
 def score_aclf(assessment: ACLFAssessment) -> dict[str, Any]:
     """Grade ACLF from six organ assessments and compute applicable scores."""
     scores = {organ.organ: organ.clif_score for organ in assessment.organs}
@@ -74,11 +92,18 @@ def score_aclf(assessment: ACLFAssessment) -> dict[str, Any]:
         "scoring_status": "complete",
         "missing_organs": missing,
         "clif_of_score": None,
+        "clif_of_score_min": None,
+        "clif_of_score_max": None,
         "n_organ_failures": None,
+        "n_organ_failures_min": None,
+        "n_organ_failures_max": None,
         "n_organ_dysfunctions": None,
         "failed_organs": [],
         "dysfunctional_organs": [],
         "aclf_grade": "indeterminate",
+        "aclf_grade_min": None,
+        "aclf_grade_max": None,
+        "aclf_present": None,
         "clif_c_aclf_score": None,
         "clif_c_ad_score": None,
         "predicted_28d_mortality": _mortality_label("indeterminate"),
@@ -88,6 +113,9 @@ def score_aclf(assessment: ACLFAssessment) -> dict[str, Any]:
             {
                 "scoring_status": "not_eligible_no_acute_decompensation",
                 "aclf_grade": "no_aclf",
+                "aclf_grade_min": "no_aclf",
+                "aclf_grade_max": "no_aclf",
+                "aclf_present": False,
                 "predicted_28d_mortality": (
                     "not applicable: no qualifying acute decompensation"
                 ),
@@ -102,7 +130,11 @@ def score_aclf(assessment: ACLFAssessment) -> dict[str, Any]:
             base.update(
                 {
                     "clif_of_score": sum(typed_scores.values()),
+                    "clif_of_score_min": sum(typed_scores.values()),
+                    "clif_of_score_max": sum(typed_scores.values()),
                     "n_organ_failures": len(failed),
+                    "n_organ_failures_min": len(failed),
+                    "n_organ_failures_max": len(failed),
                     "n_organ_dysfunctions": len(dysfunctional),
                     "failed_organs": failed,
                     "dysfunctional_organs": dysfunctional,
@@ -111,6 +143,36 @@ def score_aclf(assessment: ACLFAssessment) -> dict[str, Any]:
         return base
     if missing:
         base["scoring_status"] = "indeterminate_missing_organ_data"
+        known = {
+            name: int(score) for name, score in scores.items() if score is not None
+        }
+        minimum_scores = {name: int(score or 1) for name, score in scores.items()}
+        maximum_scores = {name: int(score or 3) for name, score in scores.items()}
+        minimum_grade = _grade_from_complete_scores(minimum_scores)
+        maximum_grade = _grade_from_complete_scores(maximum_scores)
+        known_failed = [name for name, score in known.items() if score == 3]
+        known_dysfunctional = [name for name, score in known.items() if score == 2]
+        definitely_present = minimum_grade != "no_aclf"
+        possibly_present = maximum_grade != "no_aclf"
+        base.update(
+            {
+                "clif_of_score_min": sum(minimum_scores.values()),
+                "clif_of_score_max": sum(maximum_scores.values()),
+                "n_organ_failures_min": len(known_failed),
+                "n_organ_failures_max": len(known_failed) + len(missing),
+                "failed_organs": known_failed,
+                "dysfunctional_organs": known_dysfunctional,
+                "aclf_grade_min": minimum_grade,
+                "aclf_grade_max": maximum_grade,
+                "aclf_present": True if definitely_present else (None if possibly_present else False),
+                "predicted_28d_mortality": (
+                    f"ACLF is definite; exact grade ranges from {minimum_grade} "
+                    f"to {maximum_grade} because organ data are missing"
+                    if definitely_present
+                    else "ACLF presence is indeterminate because organ data are missing"
+                ),
+            }
+        )
         return base
 
     typed_scores = {name: int(score) for name, score in scores.items() if score is not None}
@@ -119,33 +181,25 @@ def score_aclf(assessment: ACLFAssessment) -> dict[str, Any]:
     n_fail = len(failed)
     of_score = sum(typed_scores.values())
 
-    if n_fail == 0:
-        grade = "no_aclf"
-        status = "complete"
-    elif n_fail == 1:
-        if failed[0] == "kidney":
-            grade = "1a"
-        elif typed_scores["kidney"] == 2 or typed_scores["brain"] == 2:
-            grade = "1b"
-        else:
-            grade = "no_aclf"
-        status = "complete"
-    elif n_fail == 2:
-        grade, status = "2", "complete"
-    elif n_fail == 3:
-        grade, status = "3a", "complete"
-    else:
-        grade, status = "3b", "complete"
+    grade = _grade_from_complete_scores(typed_scores)
+    status = "complete"
 
     base.update(
         {
             "scoring_status": status,
             "clif_of_score": of_score,
+            "clif_of_score_min": of_score,
+            "clif_of_score_max": of_score,
             "n_organ_failures": n_fail,
+            "n_organ_failures_min": n_fail,
+            "n_organ_failures_max": n_fail,
             "n_organ_dysfunctions": len(dysfunctional),
             "failed_organs": failed,
             "dysfunctional_organs": dysfunctional,
             "aclf_grade": grade,
+            "aclf_grade_min": grade,
+            "aclf_grade_max": grade,
+            "aclf_present": grade != "no_aclf",
             "predicted_28d_mortality": _mortality_label(grade),
         }
     )

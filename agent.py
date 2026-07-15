@@ -62,6 +62,16 @@ def _episode_anchor_error(
         dated_fields.extend(
             [("wbc_date", model.wbc_date), ("sodium_date", model.sodium_date)]
         )
+        dated_fields.extend(
+            (
+                f"decompensation_evidence[{index}].event_date",
+                reference.event_date,
+            )
+            for index, reference in enumerate(
+                model.decompensation_evidence_references
+            )
+            if reference.event_date
+        )
         outside = [
             f"{name}={value}"
             for name, value in dated_fields

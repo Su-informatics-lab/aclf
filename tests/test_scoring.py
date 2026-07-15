@@ -45,6 +45,34 @@ def test_missing_organ_yields_indeterminate_not_normal():
     assert result["missing_organs"] == ["respiration"]
 
 
+def test_known_three_failures_prove_aclf_with_bounded_grade():
+    result = score_aclf(
+        assessed(
+            {
+                "liver": 3,
+                "kidney": 3,
+                "coagulation": 3,
+                "brain": None,
+                "circulation": None,
+                "respiration": None,
+            }
+        )
+    )
+    assert result["aclf_grade"] == "indeterminate"
+    assert result["aclf_present"] is True
+    assert result["aclf_grade_min"] == "3a"
+    assert result["aclf_grade_max"] == "3b"
+    assert result["n_organ_failures_min"] == 3
+    assert result["n_organ_failures_max"] == 6
+
+
+def test_single_non_kidney_failure_with_missing_kidney_is_presence_indeterminate():
+    result = score_aclf(assessed({"liver": 3, "kidney": None}))
+    assert result["aclf_present"] is None
+    assert result["aclf_grade_min"] == "no_aclf"
+    assert result["aclf_grade_max"] == "2"
+
+
 def test_no_acute_decompensation_is_not_aclf_or_ad_score():
     assessment = assessed({"kidney": 3})
     assessment.has_acute_decompensation = False

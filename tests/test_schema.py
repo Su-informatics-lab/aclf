@@ -45,6 +45,15 @@ def valid_payload(scores: dict[str, int | None] | None = None) -> dict:
         "assessment_date": "2026-01-03",
         "has_acute_decompensation": True,
         "decompensation_type": ["ascites"],
+        "decompensation_evidence_references": [
+            {
+                "source_type": "clinical_note",
+                "source_id": "1002",
+                "event_date": "2026-01-01",
+                "description": "New tense ascites requiring hospitalization",
+                "quote": "new tense ascites",
+            }
+        ],
         "organs": organs,
         "precipitants": [
             {
@@ -125,5 +134,12 @@ def test_none_identified_cannot_mix_with_precipitants():
             "confidence": "high",
         }
     )
+    with pytest.raises(ValidationError):
+        ACLFAssessment.model_validate(payload)
+
+
+def test_acute_decompensation_requires_traceable_evidence():
+    payload = valid_payload()
+    payload["decompensation_evidence_references"] = []
     with pytest.raises(ValidationError):
         ACLFAssessment.model_validate(payload)

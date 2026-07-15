@@ -10,7 +10,13 @@ The implementation is a deliberately small adaptation of Agentic Delphi:
   structured output, and validation repair;
 - removed: expert panels, debate, moderation, consensus, and external RAG;
 - added: report/GPID/OMOP provenance, raw-note keyword fallback, observed
-  inpatient episodes, deterministic scoring, and output QC.
+  inpatient episodes, deterministic scoring, and output QC. Episode dates are
+  enforced against OMOP visits, transplant/postoperative findings cannot be
+  merged into native-liver ACLF, and incomplete organ evidence yields explicit
+  ACLF-presence and grade bounds instead of assumed normal scores.
+
+Each schema-v1.1 result also records a compact retrieval trace and requires
+traceable evidence for any positive acute-decompensation assertion.
 
 See `PROVENANCE.md` for the verified identifier and dataset contracts.
 

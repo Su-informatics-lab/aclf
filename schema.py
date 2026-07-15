@@ -168,6 +168,13 @@ class ACLFAssessment(StrictModel):
     decompensation_type: list[
         Literal["ascites", "encephalopathy", "gi_hemorrhage", "jaundice", "other"]
     ] = Field(description="Documented types of acute decompensation.")
+    decompensation_evidence_references: list[EvidenceReference] = Field(
+        description=(
+            "Traceable records supporting new/worsening acute decompensation; "
+            "when acute decompensation is false, may instead document evidence "
+            "against eligibility."
+        )
+    )
     organs: list[OrganAssessment] = Field(
         min_length=6,
         max_length=6,
@@ -229,6 +236,10 @@ class ACLFAssessment(StrictModel):
         if not self.has_acute_decompensation and self.decompensation_type:
             raise ValueError(
                 "decompensation_type must be empty when acute decompensation is absent"
+            )
+        if self.has_acute_decompensation and not self.decompensation_evidence_references:
+            raise ValueError(
+                "acute decompensation requires at least one evidence reference"
             )
         return self
 

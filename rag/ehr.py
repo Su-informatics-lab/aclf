@@ -19,8 +19,78 @@ LAB_CONCEPTS: dict[str, tuple[int, ...]] = {
     "sodium": (3019550, 3000285),
     "ammonia": (3011958,),
     "pao2": (3027801, 3027315, 3013702),
+    "fio2": (3024882,),
     "spo2": (40762499, 3016502, 3013502, 3011367),
 }
+
+CORE_LAB_ORDER = (
+    "bilirubin",
+    "creatinine",
+    "inr",
+    "wbc",
+    "sodium",
+    "pao2",
+    "fio2",
+    "spo2",
+)
+CORE_LAB_IDS = tuple(
+    dict.fromkeys(
+        concept_id
+        for name in CORE_LAB_ORDER
+        for concept_id in LAB_CONCEPTS[name]
+    )
+)
+CORE_ID_TO_NAME = {
+    concept_id: name
+    for name in CORE_LAB_ORDER
+    for concept_id in LAB_CONCEPTS[name]
+}
+
+
+def _normalize_lab_key(value: str) -> str:
+    key = " ".join(
+        value.strip().lower().replace("_", " ").replace("-", " ").split()
+    )
+    return {
+        "white blood cells": "wbc",
+        "white blood cell": "wbc",
+        "white blood cell count": "wbc",
+        "total bilirubin": "bilirubin",
+        "aclf core": "aclf_core",
+    }.get(key, key)
+
+
+def _reduce_core_labs(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Return compact deterministic representatives without inventing ratios."""
+    grouped: dict[str, list[dict[str, Any]]] = {
+        name: [] for name in CORE_LAB_ORDER
+    }
+    for record in records:
+        name = CORE_ID_TO_NAME.get(record["concept_id"])
+        if name and record["value"] is not None:
+            grouped[name].append(record)
+    selected = []
+    for name in CORE_LAB_ORDER:
+        candidates = grouped[name]
+        if not candidates:
+            continue
+        if name in {"bilirubin", "creatinine", "inr"}:
+            item = max(candidates, key=lambda row: float(row["value"]))
+            rule = "maximum in requested acute window"
+        elif name in {"pao2", "spo2"}:
+            item = min(candidates, key=lambda row: float(row["value"]))
+            rule = "minimum in requested acute window; do not infer FiO2 pairing"
+        else:
+            item = min(
+                candidates,
+                key=lambda row: (row["datetime"] or row["date"] or ""),
+            )
+            rule = "earliest value in requested acute window"
+        item = dict(item)
+        item["core_lab"] = name
+        item["selection_rule"] = rule
+        selected.append(item)
+    return selected
 
 
 class EHRBackend:
@@ -70,8 +140,9 @@ class EHRBackend:
         limit: int = 50,
     ) -> list[dict[str, Any]]:
         db = self._get_db()
-        key = concept.strip().lower()
-        ids = LAB_CONCEPTS.get(key)
+        key = _normalize_lab_key(concept)
+        core_query = key == "aclf_core"
+        ids = CORE_LAB_IDS if core_query else LAB_CONCEPTS.get(key)
         params: list[Any] = [self.pid]
         if ids:
             marks = ",".join("?" for _ in ids)
@@ -89,7 +160,7 @@ class EHRBackend:
         if visit_occurrence_id is not None:
             where += " AND visit_occurrence_id = ?"
             params.append(int(visit_occurrence_id))
-        limit = max(1, min(int(limit), 200))
+        limit = 2000 if core_query else max(1, min(int(limit), 200))
         rows = db.execute(
             f"""
             SELECT measurement_id, measurement_date, measurement_datetime, value_as_number,
@@ -103,7 +174,7 @@ class EHRBackend:
             """,
             params,
         ).fetchall()
-        return [
+        records = [
             {
                 "measurement_id": row[0],
                 "date": str(row[1]) if row[1] is not None else None,
@@ -117,6 +188,7 @@ class EHRBackend:
             }
             for row in rows
         ]
+        return _reduce_core_labs(records) if core_query else records
 
     def query_medications(
         self,
@@ -321,4 +393,4 @@ class EHRBackend:
             self._db = None
 
 
-__all__ = ["EHRBackend", "LAB_CONCEPTS"]
+__all__ = ["EHRBackend", "LAB_CONCEPTS", "CORE_LAB_IDS"]

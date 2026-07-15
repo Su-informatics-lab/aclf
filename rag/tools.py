@@ -33,12 +33,17 @@ TOOL_DEFS = [
             "name": "query_labs",
             "description": (
                 "Query timestamped structured labs. ACLF-relevant concepts include "
-                "bilirubin, creatinine, INR, PaO2, FiO2, SpO2, WBC, sodium, and ammonia."
+                "bilirubin, creatinine, INR, PaO2, FiO2, SpO2, WBC, sodium, and ammonia. "
+                "Use concept='aclf_core' with a visit_occurrence_id and acute date "
+                "window to retrieve compact verified representatives in one call."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "concept": {"type": "string"},
+                    "concept": {
+                        "type": "string",
+                        "description": "Lab name or aclf_core for an all-core snapshot.",
+                    },
                     "date_start": {"type": "string"},
                     "date_end": {"type": "string"},
                     "limit": {"type": "integer", "default": 50},
