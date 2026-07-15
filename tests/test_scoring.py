@@ -55,6 +55,16 @@ def test_no_acute_decompensation_is_not_aclf_or_ad_score():
     assert result["clif_c_ad_score"] is None
 
 
+def test_no_acute_decompensation_takes_precedence_over_missing_organs():
+    assessment = assessed({"brain": None, "respiration": None})
+    assessment.has_acute_decompensation = False
+    assessment.decompensation_type = []
+    result = score_aclf(assessment)
+    assert result["aclf_grade"] == "no_aclf"
+    assert result["scoring_status"] == "not_eligible_no_acute_decompensation"
+    assert result["missing_organs"] == ["brain", "respiration"]
+
+
 def test_clif_c_aclf_formula():
     expected = 10 * (0.33 * 12 + 0.04 * 60 + 0.63 * math.log(10) - 2)
     assert compute_clif_c_aclf_score(12, 60, 10) == round(expected, 1)

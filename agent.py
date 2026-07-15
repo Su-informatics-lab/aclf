@@ -6,7 +6,8 @@ import asyncio
 import hashlib
 import json
 import logging
-from typing import Any, Type
+from datetime import date, timedelta
+from typing import Any, Callable, Type
 
 from openai import AsyncOpenAI
 from pydantic import BaseModel, ValidationError
@@ -17,6 +18,62 @@ from rag import TOOL_DEFS, PatientRAG, dispatch_tool
 from schema import ACLFAssessment, build_json_schema
 
 logger = logging.getLogger(__name__)
+
+
+def _iso_date(value: str | None) -> date | None:
+    if not value:
+        return None
+    try:
+        return date.fromisoformat(str(value)[:10])
+    except ValueError:
+        return None
+
+
+def _episode_anchor_error(
+    model: BaseModel, case_context: dict[str, Any]
+) -> str | None:
+    """Reject cross-admission and out-of-window phenotype assembly."""
+    if not isinstance(model, ACLFAssessment):
+        return None
+    episodes = case_context.get("inpatient_episodes") or []
+    pairs = {
+        (str(item.get("start_date"))[:10], str(item.get("end_date"))[:10])
+        for item in episodes
+        if item.get("start_date") and item.get("end_date")
+    }
+    chosen = (model.episode_start_date, model.episode_end_date)
+    if pairs and chosen not in pairs:
+        return (
+            "episode_start_date and episode_end_date must exactly match one supplied "
+            f"inpatient episode; got {chosen}, allowed={sorted(pairs)}"
+        )
+    start = _iso_date(model.episode_start_date)
+    end = _iso_date(model.episode_end_date)
+    assessed = _iso_date(model.assessment_date)
+    if start and end and (assessed is None or not start <= assessed <= end):
+        return "assessment_date must fall within the selected inpatient episode"
+    if start:
+        lower, upper = start - timedelta(days=7), start + timedelta(days=7)
+        dated_fields = [
+            (f"{organ.organ}.peak_value_date", organ.peak_value_date)
+            for organ in model.organs
+            if organ.peak_value_date
+        ]
+        dated_fields.extend(
+            [("wbc_date", model.wbc_date), ("sodium_date", model.sodium_date)]
+        )
+        outside = [
+            f"{name}={value}"
+            for name, value in dated_fields
+            if (parsed := _iso_date(value)) is not None
+            and not lower <= parsed <= upper
+        ]
+        if outside:
+            return (
+                "acute organ/prognostic values must be within +/-7 days of admission: "
+                + ", ".join(outside)
+            )
+    return None
 
 
 def _stable_seed(*parts: Any) -> int:
@@ -134,8 +191,10 @@ class ACLFAgent:
             + json.dumps(case_context, indent=2, default=str)
             + "\n\n=== RETRIEVED EVIDENCE ===\n"
             + _format_evidence_context(evidence)
-            + "\n\nAssess the most severe documented acute decompensation episode. "
-            "Return all six organs in the canonical order."
+            + "\n\nAssess exactly one supplied inpatient episode. Use the gathered "
+            "evidence to distinguish genuine new/worsening acute decompensation "
+            "from stable chronic disease, planned transplantation, and postoperative "
+            "findings. Return all six organs in the canonical order."
         )
         assessment = await self._validated_call(
             messages=[
@@ -146,6 +205,7 @@ class ACLFAgent:
             json_schema=build_json_schema(ACLFAssessment),
             max_retries=self._config.max_retries,
             seed=seed + 100,
+            semantic_validator=lambda model: _episode_anchor_error(model, case_context),
         )
         assessment.sample_id = sample_id
         return assessment
@@ -158,6 +218,7 @@ class ACLFAgent:
         json_schema: dict[str, Any] | None,
         max_retries: int,
         seed: int,
+        semantic_validator: Callable[[BaseModel], str | None] | None = None,
     ) -> BaseModel:
         current = list(messages)
         last_error: Exception | None = None
@@ -180,8 +241,13 @@ class ACLFAgent:
                 response = await self._client.chat.completions.create(**kwargs)
                 content = response.choices[0].message.content or "{}"
                 raw = json.loads(content)
-                return response_model.model_validate(raw)
-            except (json.JSONDecodeError, ValidationError) as exc:
+                parsed = response_model.model_validate(raw)
+                if semantic_validator:
+                    semantic_error = semantic_validator(parsed)
+                    if semantic_error:
+                        raise ValueError(semantic_error)
+                return parsed
+            except (json.JSONDecodeError, ValidationError, ValueError) as exc:
                 last_error = exc
                 logger.warning(
                     "Structured output validation failed attempt %d/%d: %s",
@@ -213,4 +279,9 @@ class ACLFAgent:
         )
 
 
-__all__ = ["ACLFAgent", "_stable_seed", "_format_evidence_context"]
+__all__ = [
+    "ACLFAgent",
+    "_stable_seed",
+    "_format_evidence_context",
+    "_episode_anchor_error",
+]

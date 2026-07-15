@@ -95,6 +95,7 @@ async def process_patient(
             "schema_version": "1.0",
             "sample_id": sample_id,
             "provenance": provenance,
+            "retrieval_trace": rag.retrieval_trace,
             "assessment": assessment.model_dump(mode="json"),
             "scores": score_aclf(assessment),
             "run_metadata": {

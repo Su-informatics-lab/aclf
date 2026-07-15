@@ -69,6 +69,7 @@ def test_verified_lab_mapping_and_episode_query(tmp_path):
         assert labs[0]["value"] == 2.1
         assert labs[0]["visit_occurrence_id"] == 10
         assert ehr.inpatient_episodes()[0]["start_date"] == "2026-01-01"
+        assert ehr.query_labs("creatinine", visit_occurrence_id=999) == []
     finally:
         ehr.close()
 

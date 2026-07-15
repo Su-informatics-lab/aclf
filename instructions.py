@@ -24,11 +24,20 @@ Available tools:
 - query_procedures: RRT, ventilation, paracentesis, biopsy and related procedures
 - get_extraction: optional pre-extracted facts; it may be empty
 
-Prefer evidence within the selected hospitalization and its +/-7-day acute
-window. Use +/-30 days only for background and precipitant context. An undated
-note cannot establish that a finding occurred in the acute window. Never infer
-normality from missing data. Stop calling tools once the six organs and likely
-precipitants have been investigated, then summarize the evidence briefly.
+First establish that a candidate hospitalization contains NEW or WORSENING
+acute decompensation. Stable chronic ascites/encephalopathy and an elective or
+planned liver-transplant admission do not by themselves establish acute
+decompensation. Findings after liver transplantation cannot be combined with
+pre-transplant findings to create ACLF of the native cirrhotic liver.
+
+Choose exactly one candidate inpatient visit. Pass its visit_occurrence_id to
+structured-EHR tools and keep organ evidence within +/-7 days of that visit's
+admission. Use +/-30 days only for background and precipitant context. Do not
+merge dates from different admissions. Explicitly investigate all six organs,
+WBC, sodium, transplant/procedure context, and precipitants. An undated note
+cannot establish an acute finding. Never infer normality from missing data.
+Stop once those questions have been investigated and identify the chosen visit
+ID and exact admission/discharge dates in the evidence summary.
 """
 
 ASSESS_SYSTEM_TEMPLATE = """\
@@ -41,6 +50,20 @@ evidence prevents a defensible organ score, set clif_score to null, confidence
 to low, and explain the missing data. Deterministic ACLF grading occurs in
 Python after this extraction; your role is to extract the six organ findings
 and precipitants accurately.
+
+Temporal rules are strict. Select one of the inpatient episodes supplied in the
+case context and copy that episode's exact start and end dates. The assessment
+date must fall within it. Organ peak dates must fall within +/-7 days of that
+episode's admission. Do not merge admissions. Chronic stable decompensation,
+admission for planned transplantation, or postoperative organ abnormalities
+without a new/worsening cirrhosis decompensation do not satisfy acute
+decompensation. Do not count findings occurring after liver transplantation as
+ACLF findings of the native cirrhotic liver. If the chart explicitly says there
+were no acute changes, treat that as evidence against acute decompensation.
+
+For a claim that no precipitant was identified, calibrate confidence to the
+documented workup. Absence of retrieved evidence alone is not a systematic
+negative workup and cannot support high confidence.
 
 === ACLF CLINICAL REFERENCE ===
 {clinical_reference}

@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from agent import ACLFAgent
+from agent import ACLFAgent, _episode_anchor_error
 from config import ACLFConfig
 from tests.test_schema import valid_payload
 
@@ -47,7 +47,12 @@ class FakeRAG:
     pid = 1030000000000001
 
     def case_context(self):
-        return {"inpatient_episodes": [], "note_provenance": {"n_notes_found": 1}}
+        return {
+            "inpatient_episodes": [
+                {"start_date": "2026-01-01", "end_date": "2026-01-05"}
+            ],
+            "note_provenance": {"n_notes_found": 1},
+        }
 
     def get_extraction(self, block=None):
         return {}
@@ -82,3 +87,16 @@ async def test_agent_uses_separate_gather_and_assess_calls(monkeypatch):
     assert "tools" in completions.calls[0]
     assert "response_format" not in completions.calls[0]
     assert completions.calls[-1]["response_format"]["type"] == "json_schema"
+
+
+def test_episode_anchor_rejects_cross_admission_merge():
+    payload = valid_payload()
+    payload["episode_end_date"] = "2026-02-05"
+    from schema import ACLFAssessment
+
+    assessment = ACLFAssessment.model_validate(payload)
+    error = _episode_anchor_error(
+        assessment,
+        {"inpatient_episodes": [{"start_date": "2026-01-01", "end_date": "2026-01-05"}]},
+    )
+    assert error and "exactly match" in error

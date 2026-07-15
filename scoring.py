@@ -83,6 +83,32 @@ def score_aclf(assessment: ACLFAssessment) -> dict[str, Any]:
         "clif_c_ad_score": None,
         "predicted_28d_mortality": _mortality_label("indeterminate"),
     }
+    if not assessment.has_acute_decompensation:
+        base.update(
+            {
+                "scoring_status": "not_eligible_no_acute_decompensation",
+                "aclf_grade": "no_aclf",
+                "predicted_28d_mortality": (
+                    "not applicable: no qualifying acute decompensation"
+                ),
+            }
+        )
+        if not missing:
+            typed_scores = {
+                name: int(score) for name, score in scores.items() if score is not None
+            }
+            failed = [name for name, score in typed_scores.items() if score == 3]
+            dysfunctional = [name for name, score in typed_scores.items() if score == 2]
+            base.update(
+                {
+                    "clif_of_score": sum(typed_scores.values()),
+                    "n_organ_failures": len(failed),
+                    "n_organ_dysfunctions": len(dysfunctional),
+                    "failed_organs": failed,
+                    "dysfunctional_organs": dysfunctional,
+                }
+            )
+        return base
     if missing:
         base["scoring_status"] = "indeterminate_missing_organ_data"
         return base
@@ -93,10 +119,7 @@ def score_aclf(assessment: ACLFAssessment) -> dict[str, Any]:
     n_fail = len(failed)
     of_score = sum(typed_scores.values())
 
-    if not assessment.has_acute_decompensation:
-        grade = "no_aclf"
-        status = "not_eligible_no_acute_decompensation"
-    elif n_fail == 0:
+    if n_fail == 0:
         grade = "no_aclf"
         status = "complete"
     elif n_fail == 1:
@@ -126,9 +149,6 @@ def score_aclf(assessment: ACLFAssessment) -> dict[str, Any]:
             "predicted_28d_mortality": _mortality_label(grade),
         }
     )
-
-    if status == "not_eligible_no_acute_decompensation":
-        return base
 
     if grade != "no_aclf":
         if assessment.age_years is not None and assessment.wbc_count is not None:

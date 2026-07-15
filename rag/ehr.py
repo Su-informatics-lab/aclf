@@ -66,6 +66,7 @@ class EHRBackend:
         concept: str,
         date_start: str | None = None,
         date_end: str | None = None,
+        visit_occurrence_id: int | None = None,
         limit: int = 50,
     ) -> list[dict[str, Any]]:
         db = self._get_db()
@@ -85,6 +86,9 @@ class EHRBackend:
         where += self._date_clause(
             "measurement_date", date_start, date_end, params
         )
+        if visit_occurrence_id is not None:
+            where += " AND visit_occurrence_id = ?"
+            params.append(int(visit_occurrence_id))
         limit = max(1, min(int(limit), 200))
         rows = db.execute(
             f"""
@@ -119,6 +123,7 @@ class EHRBackend:
         concept: str | None = None,
         date_start: str | None = None,
         date_end: str | None = None,
+        visit_occurrence_id: int | None = None,
     ) -> list[dict[str, Any]]:
         params: list[Any] = [self.pid]
         where = "person_id = ?"
@@ -132,6 +137,9 @@ class EHRBackend:
         where += self._date_clause(
             "drug_exposure_start_date", date_start, date_end, params
         )
+        if visit_occurrence_id is not None:
+            where += " AND visit_occurrence_id = ?"
+            params.append(int(visit_occurrence_id))
         rows = self._get_db().execute(
             f"""
             SELECT drug_exposure_id, drug_exposure_start_date, drug_exposure_end_date,
@@ -162,6 +170,7 @@ class EHRBackend:
         icd_prefix: str | None = None,
         date_start: str | None = None,
         date_end: str | None = None,
+        visit_occurrence_id: int | None = None,
     ) -> list[dict[str, Any]]:
         params: list[Any] = [self.pid]
         where = "person_id = ?"
@@ -172,6 +181,9 @@ class EHRBackend:
         where += self._date_clause(
             "condition_start_date", date_start, date_end, params
         )
+        if visit_occurrence_id is not None:
+            where += " AND visit_occurrence_id = ?"
+            params.append(int(visit_occurrence_id))
         rows = self._get_db().execute(
             f"""
             SELECT condition_occurrence_id, condition_start_date, condition_end_date, condition_code,
@@ -201,6 +213,7 @@ class EHRBackend:
         code_prefix: str | None = None,
         date_start: str | None = None,
         date_end: str | None = None,
+        visit_occurrence_id: int | None = None,
     ) -> list[dict[str, Any]]:
         params: list[Any] = [self.pid]
         where = "person_id = ?"
@@ -212,6 +225,9 @@ class EHRBackend:
             )
             params.extend([f"{key}%", f"%{key}%"])
         where += self._date_clause("procedure_date", date_start, date_end, params)
+        if visit_occurrence_id is not None:
+            where += " AND visit_occurrence_id = ?"
+            params.append(int(visit_occurrence_id))
         rows = self._get_db().execute(
             f"""
             SELECT procedure_occurrence_id, procedure_date, procedure_source_value, procedure_concept_id,

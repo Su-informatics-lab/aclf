@@ -42,6 +42,10 @@ TOOL_DEFS = [
                     "date_start": {"type": "string"},
                     "date_end": {"type": "string"},
                     "limit": {"type": "integer", "default": 50},
+                    "visit_occurrence_id": {
+                        "type": "integer",
+                        "description": "Candidate inpatient visit ID used to prevent cross-episode mixing."
+                    },
                 },
                 "required": ["concept"],
             },
@@ -62,6 +66,7 @@ TOOL_DEFS = [
                     "concept": {"type": "string"},
                     "date_start": {"type": "string"},
                     "date_end": {"type": "string"},
+                    "visit_occurrence_id": {"type": "integer"},
                 },
                 "required": [],
             },
@@ -78,6 +83,7 @@ TOOL_DEFS = [
                     "icd_prefix": {"type": "string"},
                     "date_start": {"type": "string"},
                     "date_end": {"type": "string"},
+                    "visit_occurrence_id": {"type": "integer"},
                 },
                 "required": [],
             },
@@ -97,6 +103,7 @@ TOOL_DEFS = [
                     "code_prefix": {"type": "string"},
                     "date_start": {"type": "string"},
                     "date_end": {"type": "string"},
+                    "visit_occurrence_id": {"type": "integer"},
                 },
                 "required": [],
             },
@@ -131,24 +138,28 @@ def dispatch_tool(rag: Any, tool_name: str, arguments: dict[str, Any]) -> str:
             date_start=arguments.get("date_start"),
             date_end=arguments.get("date_end"),
             limit=arguments.get("limit", 50),
+            visit_occurrence_id=arguments.get("visit_occurrence_id"),
         )
     elif tool_name == "query_medications":
         result = rag.query_medications(
             concept=arguments.get("concept"),
             date_start=arguments.get("date_start"),
             date_end=arguments.get("date_end"),
+            visit_occurrence_id=arguments.get("visit_occurrence_id"),
         )
     elif tool_name == "query_conditions":
         result = rag.query_conditions(
             icd_prefix=arguments.get("icd_prefix"),
             date_start=arguments.get("date_start"),
             date_end=arguments.get("date_end"),
+            visit_occurrence_id=arguments.get("visit_occurrence_id"),
         )
     elif tool_name == "query_procedures":
         result = rag.query_procedures(
             code_prefix=arguments.get("code_prefix"),
             date_start=arguments.get("date_start"),
             date_end=arguments.get("date_end"),
+            visit_occurrence_id=arguments.get("visit_occurrence_id"),
         )
     elif tool_name == "get_extraction":
         result = rag.get_extraction(block=arguments.get("block"))

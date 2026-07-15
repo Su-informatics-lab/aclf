@@ -32,6 +32,20 @@ def validate_output(path: Path) -> tuple[list[str], dict[str, Any] | None]:
     note_provenance = provenance.get("note_provenance") or {}
     if note_provenance.get("omop_person_id") != assessment.sample_id:
         errors.append("note provenance OMOP ID differs from assessment sample_id")
+    episodes = provenance.get("inpatient_episodes") or []
+    episode_pairs = {
+        (str(item.get("start_date"))[:10], str(item.get("end_date"))[:10])
+        for item in episodes
+        if item.get("start_date") and item.get("end_date")
+    }
+    if episode_pairs and (
+        assessment.episode_start_date,
+        assessment.episode_end_date,
+    ) not in episode_pairs:
+        errors.append("assessment episode does not match a provenance inpatient episode")
+    trace = payload.get("retrieval_trace")
+    if not isinstance(trace, list) or not trace:
+        errors.append("retrieval_trace is missing or empty")
     for organ in assessment.organs:
         if organ.clif_score is not None and not organ.evidence_references:
             errors.append(f"{organ.organ}: scored without evidence references")
