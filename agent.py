@@ -105,8 +105,12 @@ def _retrieval_reference_error(
         }
     )
     if unsupported:
-        return "evidence source_ids were not retrieved in this run: " + ", ".join(
-            unsupported
+        allowed_text = ", ".join(sorted(allowed))
+        return (
+            "evidence source_ids were not retrieved in this run: "
+            + ", ".join(unsupported)
+            + ". Use only these retrieved source_ids: "
+            + allowed_text
         )
     return None
 
@@ -247,12 +251,22 @@ class ACLFAgent:
             max_rounds=self._config.max_tool_rounds,
             seed=seed,
         )
+        allowed_source_ids = sorted(
+            {
+                str(source_id)
+                for item in rag.retrieval_trace
+                for source_id in (item.get("source_ids") or [])
+            }
+        )
         prompt = (
             f"=== CANONICAL SAMPLE ID ===\n{sample_id}\n\n"
             "=== VERIFIED CASE CONTEXT ===\n"
             + json.dumps(case_context, indent=2, default=str)
             + "\n\n=== RETRIEVED EVIDENCE ===\n"
             + _format_evidence_context(evidence)
+            + "\n\n=== ALLOWED EVIDENCE SOURCE IDS ===\n"
+            + json.dumps(allowed_source_ids)
+            + "\nEvery non-other evidence source_id must exactly match one ID above."
             + "\n\nAssess exactly one supplied inpatient episode. Use the gathered "
             "evidence to distinguish genuine new/worsening acute decompensation "
             "from stable chronic disease, planned transplantation, and postoperative "

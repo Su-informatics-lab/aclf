@@ -96,6 +96,8 @@ async def test_agent_uses_separate_gather_and_assess_calls(monkeypatch):
     assert completions.calls[-1]["response_format"]["type"] == "json_schema"
     assert "PREFETCHED CORE LAB EVIDENCE" in completions.calls[0]["messages"][1]["content"]
     assert "aclf_core" in completions.calls[0]["messages"][1]["content"]
+    assert "ALLOWED EVIDENCE SOURCE IDS" in completions.calls[-1]["messages"][1]["content"]
+    assert '"1001"' in completions.calls[-1]["messages"][1]["content"]
 
 
 def test_episode_anchor_rejects_cross_admission_merge():

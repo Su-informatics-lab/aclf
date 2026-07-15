@@ -72,6 +72,12 @@ hematemesis, melena, hematochezia, or endoscopically documented bleeding).
 An abdominal-wall, access-site, or paracentesis-site hematoma is not GI
 hemorrhage.
 
+The decompensation_type list is not a list of chronic cirrhosis diagnoses. Each
+listed type must be new or worsening in the selected episode and supported by
+a retrieved record. A chronic ascites or chronic encephalopathy diagnosis alone
+does not establish an acute decompensation type; omit it unless the record
+documents new/worsening disease in the acute episode.
+
 For a claim that no precipitant was identified, calibrate confidence to the
 documented workup. Absence of retrieved evidence alone is not a systematic
 negative workup and cannot support high confidence.
