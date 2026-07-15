@@ -38,6 +38,11 @@ class EHRBackend:
             import duckdb
 
             self._db = duckdb.connect(str(self.db_path), read_only=True)
+            # Quartz login/compute nodes expose many cores. DuckDB's default
+            # per-connection thread count can reserve excessive memory when
+            # several patient queries run concurrently.
+            self._db.execute("SET threads = 1")
+            self._db.execute("SET preserve_insertion_order = false")
         return self._db
 
     @staticmethod
