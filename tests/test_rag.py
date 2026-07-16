@@ -140,3 +140,43 @@ def test_tool_contract_has_six_internal_tools_only():
 
 def test_unknown_tool_returns_json_error():
     assert "Unknown tool" in dispatch_tool(object(), "not_a_tool", {})
+
+
+def test_dispatch_normalizes_note_datetimes_and_forwards_lab_datetimes():
+    class FakeRAG:
+        note_kwargs = None
+        lab_kwargs = None
+
+        def search_notes(self, **kwargs):
+            self.note_kwargs = kwargs
+            return []
+
+        def query_labs(self, **kwargs):
+            self.lab_kwargs = kwargs
+            return []
+
+    rag = FakeRAG()
+    dispatch_tool(
+        rag,
+        "search_notes",
+        {
+            "query": "hepatic encephalopathy",
+            "datetime_start": "2026-01-01 01:00:00",
+            "datetime_end": "2026-01-02 01:00:00",
+        },
+    )
+    assert rag.note_kwargs["date_start"] == "2026-01-01"
+    assert rag.note_kwargs["date_end"] == "2026-01-02"
+    assert "datetime_start" not in rag.note_kwargs
+
+    dispatch_tool(
+        rag,
+        "query_labs",
+        {
+            "concept": "bilirubin",
+            "datetime_start": "2026-01-01 01:00:00",
+            "datetime_end": "2026-01-02 01:00:00",
+        },
+    )
+    assert rag.lab_kwargs["datetime_start"] == "2026-01-01 01:00:00"
+    assert rag.lab_kwargs["datetime_end"] == "2026-01-02 01:00:00"

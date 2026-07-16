@@ -139,19 +139,32 @@ TOOL_DEFS = [
 
 def dispatch_tool(rag: Any, tool_name: str, arguments: dict[str, Any]) -> str:
     if tool_name == "search_notes":
+        # Some OpenAI-compatible endpoints emit datetime_* even though note
+        # provenance is date-granular. Normalize rather than forwarding
+        # unsupported keywords into NoteStore.search().
+        date_start = arguments.get("date_start") or (
+            str(arguments["datetime_start"])[:10]
+            if arguments.get("datetime_start")
+            else None
+        )
+        date_end = arguments.get("date_end") or (
+            str(arguments["datetime_end"])[:10]
+            if arguments.get("datetime_end")
+            else None
+        )
         result = rag.search_notes(
             query=arguments["query"],
             top_k=arguments.get("top_k", 5),
-            date_start=arguments.get("date_start"),
-            date_end=arguments.get("date_end"),
-            datetime_start=arguments.get("datetime_start"),
-            datetime_end=arguments.get("datetime_end"),
+            date_start=date_start,
+            date_end=date_end,
         )
     elif tool_name == "query_labs":
         result = rag.query_labs(
             concept=arguments["concept"],
             date_start=arguments.get("date_start"),
             date_end=arguments.get("date_end"),
+            datetime_start=arguments.get("datetime_start"),
+            datetime_end=arguments.get("datetime_end"),
             limit=arguments.get("limit", 50),
             visit_occurrence_id=arguments.get("visit_occurrence_id"),
         )
