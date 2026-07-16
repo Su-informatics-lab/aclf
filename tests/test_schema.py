@@ -179,8 +179,9 @@ def test_numeric_score_requires_peak_datetime():
 def test_record_evidence_requires_source_id():
     payload = valid_payload()
     payload["organs"][0]["evidence_references"][0]["source_id"] = None
-    with pytest.raises(ValidationError):
-        ACLFAssessment.model_validate(payload)
+    assessment = ACLFAssessment.model_validate(payload)
+    assert assessment.organs[0].clif_score is None
+    assert assessment.organs[0].evidence_references == []
 
 
 def test_missing_data_is_explicit_not_assumed_normal():
