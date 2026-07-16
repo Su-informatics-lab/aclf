@@ -183,6 +183,61 @@ def _screen_reference_error(
     )
 
 
+def _normalize_screen_retrieval_references(
+    model: EpisodeScreen, retrieval_trace: list[dict[str, Any]]
+) -> EpisodeScreen:
+    """Conservatively remove screen citations not present in this run's trace."""
+    allowed = {
+        str(source_id)
+        for item in retrieval_trace
+        for source_id in (item.get("source_ids") or [])
+    }
+    data = model.model_dump()
+    warnings = list(data.get("normalization_warnings") or [])
+
+    def supported(reference: dict[str, Any]) -> bool:
+        return reference.get("source_type") == "other" or str(
+            reference.get("source_id")
+        ) in allowed
+
+    original_screen_refs = list(data.get("evidence_references") or [])
+    screen_refs = [ref for ref in original_screen_refs if supported(ref)]
+    data["evidence_references"] = screen_refs
+    if len(screen_refs) != len(original_screen_refs):
+        warnings.append("screen evidence not retrieved in this run removed")
+
+    eligibility = data.get("eligibility") or {}
+    for name, criterion in eligibility.items():
+        original = list(criterion.get("evidence_references") or [])
+        criterion["evidence_references"] = [ref for ref in original if supported(ref)]
+        if len(criterion["evidence_references"]) != len(original):
+            warnings.append(f"eligibility.{name}: evidence not retrieved in this run removed")
+        if (
+            name == "canonical_acute_decompensation"
+            and criterion.get("status") == "yes"
+            and not criterion["evidence_references"]
+            and screen_refs
+        ):
+            criterion["evidence_references"] = screen_refs
+            warnings.append("canonical acute decompensation reused retrieved screen evidence")
+        if criterion.get("status") in {"yes", "no"} and not criterion[
+            "evidence_references"
+        ]:
+            prior = criterion["status"]
+            criterion["status"] = "unknown"
+            criterion["reasoning"] = (
+                f"Unsupported {prior} normalized to unknown: "
+                + str(criterion.get("reasoning") or "no retrieved evidence")
+            )
+            warnings.append(f"eligibility.{name}: unsupported {prior} -> unknown")
+
+    canonical = eligibility.get("canonical_acute_decompensation") or {}
+    if canonical.get("status") != "yes":
+        data["decompensation_type"] = []
+    data["normalization_warnings"] = list(dict.fromkeys(warnings))
+    return EpisodeScreen.model_validate(data)
+
+
 def _screen_anchor_error(model: BaseModel, episode: dict[str, Any]) -> str | None:
     if not isinstance(model, EpisodeScreen):
         return None
@@ -440,11 +495,9 @@ class ACLFAgent:
             max_retries=self._config.max_retries,
             seed=_stable_seed(sample_id, visit_id, "screen"),
             usage_recorder=getattr(rag, "record_llm_usage", None),
-            semantic_validator=lambda model: (
-                _screen_anchor_error(model, episode)
-                or _screen_reference_error(model, rag.retrieval_trace)
-            ),
+            semantic_validator=lambda model: _screen_anchor_error(model, episode),
         )
+        screen = _normalize_screen_retrieval_references(screen, rag.retrieval_trace)
         screen.sample_id = sample_id
         return screen
 
@@ -612,4 +665,5 @@ __all__ = [
     "_retrieval_reference_error",
     "_screen_anchor_error",
     "_screen_reference_error",
+    "_normalize_screen_retrieval_references",
 ]

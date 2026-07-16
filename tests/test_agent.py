@@ -143,6 +143,62 @@ async def test_episode_screen_uses_one_structured_call(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_episode_screen_removes_unretrieved_references_without_retry(monkeypatch):
+    payload = valid_payload()
+    bogus = {
+        "source_type": "clinical_note",
+        "source_id": "9999",
+        "event_date": "2026-01-01",
+        "description": "Unsupported citation",
+        "quote": "unsupported",
+    }
+    eligibility = payload["eligibility"]
+    for criterion in eligibility.values():
+        if criterion["status"] in {"yes", "no"}:
+            criterion["evidence_references"] = [bogus]
+    screen_payload = {
+        "sample_id": payload["sample_id"],
+        "visit_occurrence_id": payload["visit_occurrence_id"],
+        "episode_start_datetime": payload["episode_start_datetime"],
+        "episode_end_datetime": payload["episode_end_datetime"],
+        "eligibility": eligibility,
+        "decompensation_type": ["ascites"],
+        "evidence_references": [bogus],
+        "summary": "The model claimed acute decompensation using unsupported evidence.",
+    }
+    completions = FakeCompletions([FakeMessage(content=json.dumps(screen_payload))])
+    client = SimpleNamespace(chat=SimpleNamespace(completions=completions))
+    monkeypatch.setattr("agent.build_screen_system", lambda: "screen system")
+    agent = ACLFAgent(client=client, model="gpt-oss:120b", config=ACLFConfig())
+
+    class ScreenRAG(FakeRAG):
+        def search_notes(self, **kwargs):
+            return [{"report_id": "1002", "chunk_text": "new ascites"}]
+
+        def query_conditions(self, **kwargs):
+            return []
+
+        def query_procedures(self, **kwargs):
+            return []
+
+        def query_medications(self, **kwargs):
+            return []
+
+    rag = ScreenRAG()
+    episode = rag.case_context()["inpatient_episodes"][0]
+    result = await agent.screen_episode(
+        rag=rag, sample_id=str(FakeRAG.pid), episode=episode
+    )
+    assert len(completions.calls) == 1
+    assert result.eligibility.canonical_acute_decompensation.status == "unknown"
+    assert result.decompensation_type == []
+    assert result.evidence_references == []
+    assert "evidence not retrieved in this run removed" in " ".join(
+        result.normalization_warnings
+    )
+
+
+@pytest.mark.asyncio
 async def test_episode_screen_skips_llm_when_retrieval_is_empty():
     completions = FakeCompletions([])
     client = SimpleNamespace(chat=SimpleNamespace(completions=completions))
