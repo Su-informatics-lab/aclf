@@ -156,22 +156,24 @@ def test_empty_sample_id_is_rejected():
 def test_numeric_score_requires_value():
     payload = valid_payload()
     payload["organs"][0]["peak_value"] = None
-    with pytest.raises(ValidationError):
-        ACLFAssessment.model_validate(payload)
+    assessment = ACLFAssessment.model_validate(payload)
+    assert assessment.organs[0].clif_score is None
 
 
 def test_numeric_score_requires_peak_date():
     payload = valid_payload()
     payload["organs"][0]["peak_value_date"] = None
-    with pytest.raises(ValidationError):
-        ACLFAssessment.model_validate(payload)
+    assessment = ACLFAssessment.model_validate(payload)
+    assert assessment.organs[0].clif_score is None
 
 
 def test_numeric_score_requires_peak_datetime():
     payload = valid_payload()
     payload["organs"][0]["peak_value_datetime"] = None
-    with pytest.raises(ValidationError):
-        ACLFAssessment.model_validate(payload)
+    assessment = ACLFAssessment.model_validate(payload)
+    assert assessment.organs[0].clif_score is None
+    assert assessment.organs[0].peak_value is None
+    assert assessment.normalization_warnings
 
 
 def test_record_evidence_requires_source_id():
@@ -237,12 +239,23 @@ def test_known_eligibility_status_requires_evidence():
         "reasoning": "No HIV documented.",
         "evidence_references": [],
     }
-    with pytest.raises(ValidationError):
-        ACLFAssessment.model_validate(payload)
+    assessment = ACLFAssessment.model_validate(payload)
+    assert assessment.eligibility.hiv.status == "unknown"
+    assert "unsupported no -> unknown" in assessment.normalization_warnings[-1]
 
 
 def test_albumin_requires_datetime():
     payload = valid_payload()
     payload["prognostic_inputs"]["albumin_datetime"] = None
-    with pytest.raises(ValidationError):
-        ACLFAssessment.model_validate(payload)
+    assessment = ACLFAssessment.model_validate(payload)
+    assert assessment.prognostic_inputs.serum_albumin is None
+    assert assessment.prognostic_inputs.albumin_datetime is None
+
+
+def test_wbc_and_sodium_without_datetime_are_null_not_imputed():
+    payload = valid_payload()
+    payload["wbc_datetime"] = None
+    payload["sodium_datetime"] = "2026-01-02 01:00:00"  # exclusive boundary
+    assessment = ACLFAssessment.model_validate(payload)
+    assert assessment.wbc_count is None
+    assert assessment.serum_sodium is None

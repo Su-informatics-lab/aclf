@@ -252,6 +252,14 @@ class ACLFAgent:
                     seed=seed + round_index,
                     extra_body={"reasoning_effort": self._config.reasoning_effort},
                 )
+                recorder = getattr(rag, "record_llm_usage", None)
+                if recorder and response.usage is not None:
+                    usage = (
+                        response.usage.model_dump()
+                        if hasattr(response.usage, "model_dump")
+                        else dict(response.usage)
+                    )
+                    recorder({"phase": "gather", **usage})
             except Exception as exc:
                 logger.warning("Gather call failed in round %d: %s", round_index + 1, exc)
                 if "tool" in str(exc).lower() or "function" in str(exc).lower():
@@ -343,6 +351,7 @@ class ACLFAgent:
             json_schema=build_json_schema(ACLFAssessment),
             max_retries=self._config.max_retries,
             seed=seed + 100,
+            usage_recorder=getattr(rag, "record_llm_usage", None),
             semantic_validator=lambda model: (
                 (
                     f"assessment_timepoint must be {timepoint}"
@@ -364,6 +373,7 @@ class ACLFAgent:
         json_schema: dict[str, Any] | None,
         max_retries: int,
         seed: int,
+        usage_recorder: Callable[[dict[str, Any]], None] | None = None,
         semantic_validator: Callable[[BaseModel], str | None] | None = None,
     ) -> BaseModel:
         current = list(messages)
@@ -385,6 +395,13 @@ class ACLFAgent:
             }
             try:
                 response = await self._client.chat.completions.create(**kwargs)
+                if usage_recorder and response.usage is not None:
+                    usage = (
+                        response.usage.model_dump()
+                        if hasattr(response.usage, "model_dump")
+                        else dict(response.usage)
+                    )
+                    usage_recorder({"phase": "assess", **usage})
                 content = response.choices[0].message.content or "{}"
                 raw = json.loads(content)
                 parsed = response_model.model_validate(raw)

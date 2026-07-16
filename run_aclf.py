@@ -111,6 +111,18 @@ def index_exclusion_reason(assessment: Any) -> str | None:
     return None
 
 
+def summarize_llm_usage(records: list[dict[str, Any]]) -> dict[str, int]:
+    """Aggregate endpoint-reported token usage without storing prompts or state."""
+    return {
+        "api_calls_with_usage": len(records),
+        "prompt_tokens": sum(int(item.get("prompt_tokens") or 0) for item in records),
+        "completion_tokens": sum(
+            int(item.get("completion_tokens") or 0) for item in records
+        ),
+        "total_tokens": sum(int(item.get("total_tokens") or 0) for item in records),
+    }
+
+
 async def process_patient(
     pid: int,
     *,
@@ -149,6 +161,7 @@ async def process_patient(
                     "model": args.model,
                     "api_base": normalize_api_base(args.api_base),
                     "completed_at": datetime.now(timezone.utc).isoformat(),
+                    "llm_usage": summarize_llm_usage(rag.llm_usage),
                 },
             }
             atomic_json(output_path, payload)
@@ -194,6 +207,7 @@ async def process_patient(
                     "model": args.model,
                     "api_base": normalize_api_base(args.api_base),
                     "completed_at": datetime.now(timezone.utc).isoformat(),
+                    "llm_usage": summarize_llm_usage(rag.llm_usage),
                 },
             }
             atomic_json(output_path, payload)
@@ -237,6 +251,7 @@ async def process_patient(
                 "model": args.model,
                 "api_base": normalize_api_base(args.api_base),
                 "completed_at": datetime.now(timezone.utc).isoformat(),
+                "llm_usage": summarize_llm_usage(rag.llm_usage),
             },
         }
         atomic_json(output_path, payload)
@@ -252,6 +267,7 @@ async def process_patient(
             "error_type": type(exc).__name__,
             "error": str(exc),
             "failed_at": datetime.now(timezone.utc).isoformat(),
+            "llm_usage": summarize_llm_usage(getattr(rag, "llm_usage", [])),
         }
         atomic_json(args.output_dir / f"{sample_id}.error.json", error)
         return error

@@ -98,6 +98,9 @@ requires retrieved evidence. Unknown is preferable to guessing. Confirmed
 scheduled treatment/procedure, prior liver transplant, HCC outside Milan,
 HIV, immunosuppression, or severe chronic extrahepatic disease is recorded for
 downstream exclusion; the agent must not silently omit those findings.
+The validator conservatively changes unsupported yes/no eligibility claims to
+unknown and removes score inputs that lack an in-window datetime or traceable
+evidence. Avoid these normalizations by returning null/unknown yourself.
 
 === ACLF CLINICAL REFERENCE ===
 {clinical_reference}

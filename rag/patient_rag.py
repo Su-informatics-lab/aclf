@@ -33,6 +33,10 @@ class PatientRAG:
         )
         self.extraction_dir = Path(extraction_dir) if extraction_dir else None
         self.retrieval_trace: list[dict[str, Any]] = []
+        self.llm_usage: list[dict[str, Any]] = []
+
+    def record_llm_usage(self, record: dict[str, Any]) -> None:
+        self.llm_usage.append(record)
 
     def _record(self, tool: str, arguments: dict[str, Any], result: Any) -> Any:
         id_fields = {

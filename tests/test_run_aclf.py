@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from schema import ACLFAssessment
-from run_aclf import assign_split, index_exclusion_reason
+from run_aclf import assign_split, index_exclusion_reason, summarize_llm_usage
 from tests.test_schema import valid_payload
 
 
@@ -31,3 +31,18 @@ def test_non_elective_no_is_excluded():
         index_exclusion_reason(assessment_with_status("non_elective_admission", "no"))
         == "not_non_elective"
     )
+
+
+def test_llm_usage_summary_contains_counts_not_prompts():
+    summary = summarize_llm_usage(
+        [
+            {"prompt_tokens": 100, "completion_tokens": 20, "total_tokens": 120},
+            {"prompt_tokens": 50, "completion_tokens": 10, "total_tokens": 60},
+        ]
+    )
+    assert summary == {
+        "api_calls_with_usage": 2,
+        "prompt_tokens": 150,
+        "completion_tokens": 30,
+        "total_tokens": 180,
+    }

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 from enum import Enum
 from typing import Any, Literal, Type, Union, get_args, get_origin
 
@@ -320,6 +321,125 @@ class ACLFAssessment(StrictModel):
     episode_end_date: str | None = Field(
         description="ISO end date of the assessed hospitalization or null."
     )
+    normalization_warnings: list[str] = Field(
+        default_factory=list,
+        description="Deterministic conservative normalizations applied before scoring.",
+    )
+
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_unsupported_claims(cls, raw: Any) -> Any:
+        """Downgrade unsupported claims to unknown/null instead of guessing."""
+        if not isinstance(raw, dict):
+            return raw
+        data = dict(raw)
+        warnings = list(data.get("normalization_warnings") or [])
+
+        eligibility = {
+            name: dict(value) if isinstance(value, dict) else value
+            for name, value in (data.get("eligibility") or {}).items()
+        }
+        canonical = eligibility.get("canonical_acute_decompensation")
+        decomp_refs = list(data.get("decompensation_evidence_references") or [])
+        if (
+            isinstance(canonical, dict)
+            and canonical.get("status") == "yes"
+            and not canonical.get("evidence_references")
+            and decomp_refs
+        ):
+            canonical["evidence_references"] = decomp_refs
+            warnings.append("canonical acute decompensation reused its traceable episode evidence")
+        for name, criterion in eligibility.items():
+            if (
+                isinstance(criterion, dict)
+                and criterion.get("status") in {"yes", "no"}
+                and not criterion.get("evidence_references")
+            ):
+                prior = criterion.get("status")
+                criterion["status"] = "unknown"
+                criterion["reasoning"] = (
+                    f"Unsupported {prior} normalized to unknown: "
+                    + str(criterion.get("reasoning") or "no traceable evidence")
+                )
+                warnings.append(f"eligibility.{name}: unsupported {prior} -> unknown")
+        data["eligibility"] = eligibility
+        if isinstance(canonical, dict) and canonical.get("status") != "yes":
+            if data.get("has_acute_decompensation") is True:
+                warnings.append("unsupported acute decompensation -> not confirmed")
+            data["has_acute_decompensation"] = False
+            data["decompensation_type"] = []
+
+        try:
+            window_start = datetime.fromisoformat(
+                str(data.get("baseline_window_start")).replace("Z", "+00:00")
+            )
+            window_end = datetime.fromisoformat(
+                str(data.get("baseline_window_end")).replace("Z", "+00:00")
+            )
+        except (TypeError, ValueError):
+            window_start = window_end = None
+
+        def in_window(value: Any) -> bool:
+            if not value or window_start is None or window_end is None:
+                return False
+            try:
+                parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+            except ValueError:
+                return False
+            return window_start <= parsed < window_end
+
+        normalized_organs = []
+        for item in data.get("organs") or []:
+            organ = dict(item) if isinstance(item, dict) else item
+            if not isinstance(organ, dict):
+                normalized_organs.append(organ)
+                continue
+            scored = organ.get("clif_score") is not None
+            numeric = organ.get("organ") in {"liver", "kidney", "coagulation"}
+            unsupported = scored and not organ.get("evidence_references")
+            invalid_numeric = scored and numeric and (
+                organ.get("peak_value") is None
+                or not organ.get("peak_value_date")
+                or not in_window(organ.get("peak_value_datetime"))
+            )
+            if unsupported or invalid_numeric:
+                reason = (
+                    "No traceable evidence for assigned organ score"
+                    if unsupported
+                    else "Numeric organ value missing or outside the baseline 24-hour window"
+                )
+                warnings.append(f"organ.{organ.get('organ')}: score -> indeterminate ({reason})")
+                organ["clif_score"] = None
+                organ["confidence"] = "low"
+                organ["missing_data_reason"] = reason
+                if numeric:
+                    organ["peak_value"] = None
+                    organ["peak_value_unit"] = None
+                    organ["peak_value_date"] = None
+                    organ["peak_value_datetime"] = None
+            normalized_organs.append(organ)
+        data["organs"] = normalized_organs
+
+        for value_name, date_name, datetime_name in (
+            ("wbc_count", "wbc_date", "wbc_datetime"),
+            ("serum_sodium", "sodium_date", "sodium_datetime"),
+        ):
+            if data.get(value_name) is not None and not in_window(data.get(datetime_name)):
+                warnings.append(f"{value_name}: missing/out-of-window datetime -> null")
+                data[value_name] = None
+                data[date_name] = None
+                data[datetime_name] = None
+
+        prognostic = dict(data.get("prognostic_inputs") or {})
+        if prognostic.get("serum_albumin") is not None and not in_window(
+            prognostic.get("albumin_datetime")
+        ):
+            warnings.append("serum_albumin: missing/out-of-window datetime -> null")
+            prognostic["serum_albumin"] = None
+            prognostic["albumin_datetime"] = None
+        data["prognostic_inputs"] = prognostic
+        data["normalization_warnings"] = list(dict.fromkeys(warnings))
+        return data
 
     @field_validator("sample_id")
     @classmethod
