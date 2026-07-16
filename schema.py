@@ -25,6 +25,18 @@ ORGAN_ORDER: tuple[str, ...] = (
 )
 
 
+def _traceable_reference_dicts(values: Any) -> list[Any]:
+    """Keep only references that can satisfy the record-ID provenance contract."""
+    if not isinstance(values, list):
+        return []
+    return [
+        value
+        for value in values
+        if isinstance(value, dict)
+        and (value.get("source_type") == "other" or value.get("source_id"))
+    ]
+
+
 class StrictModel(BaseModel):
     """Base model that rejects fields outside the clinical contract."""
 
@@ -237,7 +249,11 @@ class EpisodeScreen(StrictModel):
             for name, value in (data.get("eligibility") or {}).items()
         }
         canonical = eligibility.get("canonical_acute_decompensation")
-        screen_refs = list(data.get("evidence_references") or [])
+        original_screen_refs = list(data.get("evidence_references") or [])
+        screen_refs = _traceable_reference_dicts(original_screen_refs)
+        data["evidence_references"] = screen_refs
+        if len(screen_refs) != len(original_screen_refs):
+            warnings.append("screen evidence without source_id removed")
         if (
             isinstance(canonical, dict)
             and canonical.get("status") == "yes"
@@ -247,6 +263,19 @@ class EpisodeScreen(StrictModel):
             canonical["evidence_references"] = screen_refs
             warnings.append("canonical acute decompensation reused screen evidence")
         for name, criterion in eligibility.items():
+            if isinstance(criterion, dict):
+                original = list(criterion.get("evidence_references") or [])
+                criterion["evidence_references"] = _traceable_reference_dicts(original)
+                if len(criterion["evidence_references"]) != len(original):
+                    warnings.append(f"eligibility.{name}: untraceable evidence removed")
+                if (
+                    name == "canonical_acute_decompensation"
+                    and criterion.get("status") == "yes"
+                    and not criterion["evidence_references"]
+                    and screen_refs
+                ):
+                    criterion["evidence_references"] = screen_refs
+                    warnings.append("canonical acute decompensation reused screen evidence")
             if (
                 isinstance(criterion, dict)
                 and criterion.get("status") in {"yes", "no"}
@@ -403,7 +432,11 @@ class ACLFAssessment(StrictModel):
             for name, value in (data.get("eligibility") or {}).items()
         }
         canonical = eligibility.get("canonical_acute_decompensation")
-        decomp_refs = list(data.get("decompensation_evidence_references") or [])
+        original_decomp_refs = list(data.get("decompensation_evidence_references") or [])
+        decomp_refs = _traceable_reference_dicts(original_decomp_refs)
+        data["decompensation_evidence_references"] = decomp_refs
+        if len(decomp_refs) != len(original_decomp_refs):
+            warnings.append("acute decompensation evidence without source_id removed")
         if (
             isinstance(canonical, dict)
             and canonical.get("status") == "yes"
@@ -413,6 +446,21 @@ class ACLFAssessment(StrictModel):
             canonical["evidence_references"] = decomp_refs
             warnings.append("canonical acute decompensation reused its traceable episode evidence")
         for name, criterion in eligibility.items():
+            if isinstance(criterion, dict):
+                original = list(criterion.get("evidence_references") or [])
+                criterion["evidence_references"] = _traceable_reference_dicts(original)
+                if len(criterion["evidence_references"]) != len(original):
+                    warnings.append(f"eligibility.{name}: untraceable evidence removed")
+                if (
+                    name == "canonical_acute_decompensation"
+                    and criterion.get("status") == "yes"
+                    and not criterion["evidence_references"]
+                    and decomp_refs
+                ):
+                    criterion["evidence_references"] = decomp_refs
+                    warnings.append(
+                        "canonical acute decompensation reused its traceable episode evidence"
+                    )
             if (
                 isinstance(criterion, dict)
                 and criterion.get("status") in {"yes", "no"}
@@ -457,6 +505,10 @@ class ACLFAssessment(StrictModel):
             if not isinstance(organ, dict):
                 normalized_organs.append(organ)
                 continue
+            original_refs = list(organ.get("evidence_references") or [])
+            organ["evidence_references"] = _traceable_reference_dicts(original_refs)
+            if len(organ["evidence_references"]) != len(original_refs):
+                warnings.append(f"organ.{organ.get('organ')}: untraceable evidence removed")
             scored = organ.get("clif_score") is not None
             numeric = organ.get("organ") in {"liver", "kidney", "coagulation"}
             unsupported = scored and not organ.get("evidence_references")
@@ -483,6 +535,17 @@ class ACLFAssessment(StrictModel):
             normalized_organs.append(organ)
         data["organs"] = normalized_organs
 
+        normalized_precipitants = []
+        for item in data.get("precipitants") or []:
+            precipitant = dict(item) if isinstance(item, dict) else item
+            if isinstance(precipitant, dict):
+                original = list(precipitant.get("evidence_references") or [])
+                precipitant["evidence_references"] = _traceable_reference_dicts(original)
+                if len(precipitant["evidence_references"]) != len(original):
+                    warnings.append("precipitant evidence without source_id removed")
+            normalized_precipitants.append(precipitant)
+        data["precipitants"] = normalized_precipitants
+
         for value_name, date_name, datetime_name in (
             ("wbc_count", "wbc_date", "wbc_datetime"),
             ("serum_sodium", "sodium_date", "sodium_datetime"),
@@ -494,6 +557,12 @@ class ACLFAssessment(StrictModel):
                 data[datetime_name] = None
 
         prognostic = dict(data.get("prognostic_inputs") or {})
+        original_prognostic_refs = list(prognostic.get("evidence_references") or [])
+        prognostic["evidence_references"] = _traceable_reference_dicts(
+            original_prognostic_refs
+        )
+        if len(prognostic["evidence_references"]) != len(original_prognostic_refs):
+            warnings.append("prognostic evidence without source_id removed")
         if prognostic.get("serum_albumin") is not None and not in_window(
             prognostic.get("albumin_datetime")
         ):

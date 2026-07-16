@@ -15,7 +15,7 @@ from pydantic import BaseModel, ValidationError
 from config import ACLFConfig
 from instructions import GATHER_SYSTEM, build_assess_system, build_screen_system
 from rag import TOOL_DEFS, PatientRAG, dispatch_tool
-from schema import ACLFAssessment, EpisodeScreen, build_json_schema
+from schema import ACLFAssessment, EpisodeEligibility, EpisodeScreen, build_json_schema
 
 logger = logging.getLogger(__name__)
 
@@ -362,6 +362,7 @@ class ACLFAgent:
             ("query_medications", rag.query_medications, {"date_start": start_date, "date_end": end_date, "visit_occurrence_id": visit_id}),
         ]
         evidence: list[dict[str, Any]] = []
+        has_candidate_evidence = False
         screen_terms = (
             "ascites", "encephal", "infect", "sepsis", "bleed", "hemorr", "melena",
             "transplant", "surgery", "procedure", "postop", "hcc", "carcinoma", "hiv",
@@ -380,11 +381,37 @@ class ACLFAgent:
                     if any(term in json.dumps(row, default=str).lower() for term in screen_terms)
                 ]
                 result = (relevant or result)[:25]
+            if isinstance(result, list) and result:
+                has_candidate_evidence = True
             evidence.append(
                 {
                     "tool": name,
                     "args": arguments,
                     "result": json.dumps(result, default=str, ensure_ascii=False),
+                }
+            )
+        if not has_candidate_evidence:
+            eligibility = {
+                name: {
+                    "status": "unknown",
+                    "reasoning": "No candidate eligibility evidence was retrieved for this visit.",
+                    "evidence_references": [],
+                }
+                for name in EpisodeEligibility.model_fields
+            }
+            return EpisodeScreen.model_validate(
+                {
+                    "sample_id": sample_id,
+                    "visit_occurrence_id": visit_id,
+                    "episode_start_datetime": str(episode["start_datetime"]),
+                    "episode_end_datetime": str(episode["end_datetime"]),
+                    "eligibility": eligibility,
+                    "decompensation_type": [],
+                    "evidence_references": [],
+                    "summary": "No candidate acute-decompensation eligibility evidence was retrieved.",
+                    "normalization_warnings": [
+                        "screen short-circuited: no candidate evidence"
+                    ],
                 }
             )
         allowed_source_ids = sorted(

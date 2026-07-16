@@ -122,7 +122,7 @@ async def test_episode_screen_uses_one_structured_call(monkeypatch):
 
     class ScreenRAG(FakeRAG):
         def search_notes(self, **kwargs):
-            return []
+            return [{"report_id": "1002", "chunk_text": "new ascites"}]
 
         def query_conditions(self, **kwargs):
             return []
@@ -140,6 +140,38 @@ async def test_episode_screen_uses_one_structured_call(monkeypatch):
     assert result.visit_occurrence_id == 10
     assert len(completions.calls) == 1
     assert "tools" not in completions.calls[0]
+
+
+@pytest.mark.asyncio
+async def test_episode_screen_skips_llm_when_retrieval_is_empty():
+    completions = FakeCompletions([])
+    client = SimpleNamespace(chat=SimpleNamespace(completions=completions))
+    agent = ACLFAgent(client=client, model="gpt-oss:120b", config=ACLFConfig())
+
+    class EmptyRAG(FakeRAG):
+        def search_notes(self, **kwargs):
+            return []
+
+        def query_conditions(self, **kwargs):
+            return []
+
+        def query_procedures(self, **kwargs):
+            return []
+
+        def query_medications(self, **kwargs):
+            return []
+
+    rag = EmptyRAG()
+    result = await agent.screen_episode(
+        rag=rag,
+        sample_id=str(FakeRAG.pid),
+        episode=rag.case_context()["inpatient_episodes"][0],
+    )
+    assert result.eligibility.canonical_acute_decompensation.status == "unknown"
+    assert result.normalization_warnings == [
+        "screen short-circuited: no candidate evidence"
+    ]
+    assert completions.calls == []
 
 
 def test_episode_anchor_rejects_cross_admission_merge():
