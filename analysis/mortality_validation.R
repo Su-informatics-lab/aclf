@@ -18,7 +18,8 @@ suppressPackageStartupMessages({
   library(survival)
 })
 
-d <- read.csv(input, stringsAsFactors = FALSE, na.strings = c("", "None", "null"))
+d <- read.csv(input, stringsAsFactors = FALSE, na.strings = c("", "NA", "None", "null"))
+suppress_small <- function(x) ifelse(!is.na(x) & x < 5, "<5", as.character(x))
 as_bool <- function(x) {
   value <- tolower(as.character(x)) == "true"
   value[is.na(value)] <- FALSE
@@ -121,7 +122,16 @@ for (grp in levels(ad$risk_group)) {
     observed_mortality = mean(z$death_90d), ci_low = bt$conf.int[1], ci_high = bt$conf.int[2]
   )
 }
-if (length(risk_rows)) write.csv(do.call(rbind, risk_rows), file.path(outdir, "clif_c_ad_risk_groups.csv"), row.names = FALSE)
+if (length(risk_rows)) {
+  risk_table <- do.call(rbind, risk_rows)
+  small <- risk_table$n < 5 | risk_table$deaths_90d < 5
+  risk_table$observed_mortality[small] <- NA
+  risk_table$ci_low[small] <- NA
+  risk_table$ci_high[small] <- NA
+  risk_table$n <- suppress_small(risk_table$n)
+  risk_table$deaths_90d <- suppress_small(risk_table$deaths_90d)
+  write.csv(risk_table, file.path(outdir, "clif_c_ad_risk_groups.csv"), row.names = FALSE)
+}
 
 cif_frame <- function(data, time_col, status_col, group_col, horizon, panel) {
   x <- data[!is.na(data[[time_col]]) & !is.na(data[[status_col]]) & !is.na(data[[group_col]]), ]
@@ -213,7 +223,13 @@ add_concordance <- function(data, horizon, scores, label) {
 add_concordance(d[fig5_full, ], 90, fig5_scores, "Figure 5 full cohort; transplant-censored")
 add_concordance(d[fig6_full, ], 28, fig6_scores, "Figure 6 full cohort; transplant-censored")
 if (length(concordance_rows)) {
-  write.csv(do.call(rbind, concordance_rows), file.path(outdir, "transplant_censored_concordance.csv"), row.names = FALSE)
+  concordance_table <- do.call(rbind, concordance_rows)
+  small <- concordance_table$n < 5 | concordance_table$deaths < 5
+  concordance_table$concordance[small] <- NA
+  concordance_table$standard_error[small] <- NA
+  concordance_table$n <- suppress_small(concordance_table$n)
+  concordance_table$deaths <- suppress_small(concordance_table$deaths)
+  write.csv(concordance_table, file.path(outdir, "transplant_censored_concordance.csv"), row.names = FALSE)
 }
 
 if (nrow(six)) {
@@ -225,10 +241,12 @@ if (nrow(six)) {
   names(group_n) <- c("group", "n")
   group_summary <- merge(group_n, group_summary, by = "group", all = TRUE)
   group_summary$stability_warning <- group_summary$n < 10 | group_summary$death_360d < 3
+  group_summary$n <- suppress_small(group_summary$n)
+  group_summary$death_360d <- suppress_small(group_summary$death_360d)
+  group_summary$transplant_360d <- suppress_small(group_summary$transplant_360d)
   write.csv(group_summary, file.path(outdir, "six_group_summary.csv"), row.names = FALSE)
 }
 
-suppress_small <- function(x) ifelse(!is.na(x) & x < 5, "<5", as.character(x))
 flow_path <- file.path(dirname(input), "cohort_flow.csv")
 if (file.exists(flow_path)) {
   flow <- read.csv(flow_path, stringsAsFactors = FALSE)
