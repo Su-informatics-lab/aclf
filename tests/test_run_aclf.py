@@ -10,6 +10,10 @@ def assessment_with_status(criterion: str, status: str) -> ACLFAssessment:
     payload["eligibility"][criterion]["status"] = status
     if status == "unknown":
         payload["eligibility"][criterion]["evidence_references"] = []
+    elif not payload["eligibility"][criterion]["evidence_references"]:
+        payload["eligibility"][criterion]["evidence_references"] = payload[
+            "eligibility"
+        ]["canonical_acute_decompensation"]["evidence_references"]
     return ACLFAssessment.model_validate(payload)
 
 
