@@ -194,7 +194,11 @@ def load_frozen_assessments(directory: Path) -> tuple[list[dict[str, Any]], Coun
             follow_assessment = item.get("assessment") or {}
             follow_scores = item.get("scores") or {}
             follow_dt = _datetime(follow_assessment.get("episode_start_datetime"))
-            if follow_dt and follow_scores.get("aclf_present") is True:
+            if (
+                follow_dt
+                and follow_scores.get("aclf_present") is True
+                and _exclusion_reason(follow_assessment) is None
+            ):
                 incident_aclf.append((follow_dt.date(), follow_scores))
         first_incident = min(incident_aclf, key=lambda item: item[0]) if incident_aclf else None
         row = {

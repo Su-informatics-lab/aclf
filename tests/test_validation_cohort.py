@@ -74,6 +74,28 @@ def test_frozen_loader_carries_first_incident_aclf_scores(tmp_path):
     assert rows[0]["incident_clif_c_aclf_score"] == 61.0
 
 
+def test_ineligible_followup_does_not_trigger_incident_aclf(tmp_path):
+    followup = incident_followup()
+    followup["assessment"]["eligibility"]["prior_liver_transplant"] = {
+        "status": "yes",
+        "reasoning": "Prior liver transplant is documented.",
+        "evidence_references": [
+            {
+                "source_type": "clinical_note",
+                "source_id": "1002",
+                "event_date": "2026-03-31",
+                "description": "Prior transplant documented",
+                "quote": "status post liver transplant",
+            }
+        ],
+    }
+    payload = frozen_payload(102, baseline_aclf=False, followups=[followup])
+    (tmp_path / "102.json").write_text(json.dumps(payload), encoding="utf-8")
+    rows, _ = load_frozen_assessments(tmp_path)
+    assert rows[0]["n_followup_readmissions_90d"] == 1
+    assert rows[0]["incident_aclf_date"] is None
+
+
 def test_predict_trajectories_and_day90_boundary():
     rows = [
         {**load_row(201), "n_followup_readmissions_90d": 0},
