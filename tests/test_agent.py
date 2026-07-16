@@ -144,7 +144,7 @@ def test_episode_anchor_accepts_equivalent_iso_datetime_format():
     assert error is None
 
 
-def test_episode_anchor_rejects_value_at_exclusive_24h_boundary():
+def test_episode_anchor_accepts_conservatively_nulled_24h_boundary_value():
     from schema import ACLFAssessment
 
     payload = valid_payload()
@@ -152,7 +152,9 @@ def test_episode_anchor_rejects_value_at_exclusive_24h_boundary():
     assessment = ACLFAssessment.model_validate(payload)
     context = FakeRAG().case_context()
     error = _episode_anchor_error(assessment, context)
-    assert error and "[admission, admission + 24h)" in error
+    assert assessment.organs[0].clif_score is None
+    assert assessment.organs[0].peak_value is None
+    assert error is None
 
 
 def test_unretrieved_evidence_id_is_rejected():
