@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import json
 from collections import Counter
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -13,67 +14,55 @@ from schema import ACLFAssessment
 from scoring import score_aclf
 
 
-def validate_output(path: Path) -> tuple[list[str], dict[str, Any] | None]:
+def _parse_datetime(value: Any) -> datetime:
+    return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+
+
+def _validate_assessment(
+    assessment_payload: dict[str, Any],
+    saved_scores: dict[str, Any],
+    episodes: list[dict[str, Any]],
+    retrieved_ids: set[str],
+) -> tuple[list[str], ACLFAssessment | None]:
     errors: list[str] = []
     try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
+        assessment = ACLFAssessment.model_validate(assessment_payload)
     except Exception as exc:
-        return [f"invalid JSON: {exc}"], None
-    try:
-        assessment = ACLFAssessment.model_validate(payload.get("assessment"))
-    except Exception as exc:
-        return [f"invalid assessment: {exc}"], payload
-    if str(payload.get("sample_id")) != assessment.sample_id:
-        errors.append("top-level sample_id differs from assessment.sample_id")
+        return [f"invalid assessment: {exc}"], None
     rescored = score_aclf(assessment)
-    if payload.get("scores") != rescored:
+    if saved_scores != rescored:
         errors.append("saved deterministic scores differ from fresh score_aclf output")
-    provenance = payload.get("provenance") or {}
-    note_provenance = provenance.get("note_provenance") or {}
-    if note_provenance.get("omop_person_id") != assessment.sample_id:
-        errors.append("note provenance OMOP ID differs from assessment sample_id")
-    episodes = provenance.get("inpatient_episodes") or []
-    episode_pairs = {
-        (str(item.get("start_date"))[:10], str(item.get("end_date"))[:10])
+    episode_by_id = {
+        int(item["visit_occurrence_id"]): item
         for item in episodes
-        if item.get("start_date") and item.get("end_date")
+        if item.get("visit_occurrence_id") is not None
     }
-    if episode_pairs and (
-        assessment.episode_start_date,
-        assessment.episode_end_date,
-    ) not in episode_pairs:
-        errors.append("assessment episode does not match a provenance inpatient episode")
-    trace = payload.get("retrieval_trace")
-    if not isinstance(trace, list) or not trace:
-        errors.append("retrieval_trace is missing or empty")
-    retrieved_ids = {
-        str(source_id)
-        for item in (trace or [])
-        if isinstance(item, dict)
-        for source_id in (item.get("source_ids") or [])
-    }
-    if (
-        assessment.has_acute_decompensation
-        and not assessment.decompensation_evidence_references
-    ):
-        errors.append("acute decompensation lacks traceable supporting evidence")
-    for organ in assessment.organs:
-        if organ.clif_score is not None and not organ.evidence_references:
-            errors.append(f"{organ.organ}: scored without evidence references")
-        for reference in organ.evidence_references:
-            if reference.source_type == "clinical_note" and not reference.source_id:
-                errors.append(f"{organ.organ}: note evidence lacks report_id")
+    episode = episode_by_id.get(assessment.visit_occurrence_id)
+    if episode_by_id and episode is None:
+        errors.append("assessment visit_occurrence_id is absent from provenance")
+    elif episode is not None:
+        expected = (
+            _parse_datetime(episode.get("start_datetime")),
+            _parse_datetime(episode.get("end_datetime")),
+        )
+        observed = (
+            _parse_datetime(assessment.episode_start_datetime),
+            _parse_datetime(assessment.episode_end_datetime),
+        )
+        if observed != expected:
+            errors.append("assessment datetimes differ from provenance inpatient episode")
     references = list(assessment.decompensation_evidence_references)
     references.extend(
-        reference
-        for organ in assessment.organs
-        for reference in organ.evidence_references
+        reference for organ in assessment.organs for reference in organ.evidence_references
     )
     references.extend(
         reference
         for precipitant in assessment.precipitants
         for reference in precipitant.evidence_references
     )
+    references.extend(assessment.prognostic_inputs.evidence_references)
+    for criterion in type(assessment.eligibility).model_fields:
+        references.extend(getattr(assessment.eligibility, criterion).evidence_references)
     unsupported = sorted(
         {
             str(reference.source_id)
@@ -85,6 +74,61 @@ def validate_output(path: Path) -> tuple[list[str], dict[str, Any] | None]:
     )
     if unsupported:
         errors.append("evidence IDs absent from retrieval_trace: " + ", ".join(unsupported))
+    return errors, assessment
+
+
+def validate_output(path: Path) -> tuple[list[str], dict[str, Any] | None]:
+    errors: list[str] = []
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        return [f"invalid JSON: {exc}"], None
+    if payload.get("schema_version") != "2.0":
+        errors.append("schema_version is not 2.0")
+    if payload.get("outcome_blinded") is not True:
+        errors.append("outcome_blinded must be true")
+    if payload.get("assessment") is None:
+        if not payload.get("exclusion_reason"):
+            errors.append("missing assessment requires exclusion_reason")
+        return errors, payload
+    assessment_payload = payload["assessment"]
+    provenance = payload.get("provenance") or {}
+    note_provenance = provenance.get("note_provenance") or {}
+    episodes = provenance.get("inpatient_episodes") or []
+    trace = payload.get("retrieval_trace")
+    if not isinstance(trace, list) or not trace:
+        errors.append("retrieval_trace is missing or empty")
+    retrieved_ids = {
+        str(source_id)
+        for item in (trace or [])
+        if isinstance(item, dict)
+        for source_id in (item.get("source_ids") or [])
+    }
+    assessment_errors, assessment = _validate_assessment(
+        assessment_payload, payload.get("scores") or {}, episodes, retrieved_ids
+    )
+    errors.extend(assessment_errors)
+    if assessment is None:
+        return errors, payload
+    if str(payload.get("sample_id")) != assessment.sample_id:
+        errors.append("top-level sample_id differs from assessment.sample_id")
+    if note_provenance.get("omop_person_id") != assessment.sample_id:
+        errors.append("note provenance OMOP ID differs from assessment sample_id")
+    seen_visits = {assessment.visit_occurrence_id}
+    for index, followup in enumerate(payload.get("follow_up_assessments") or []):
+        follow_errors, follow_assessment = _validate_assessment(
+            followup.get("assessment") or {},
+            followup.get("scores") or {},
+            episodes,
+            retrieved_ids,
+        )
+        errors.extend(f"follow_up[{index}]: {error}" for error in follow_errors)
+        if follow_assessment:
+            if follow_assessment.assessment_timepoint != "follow_up":
+                errors.append(f"follow_up[{index}]: assessment_timepoint must be follow_up")
+            if follow_assessment.visit_occurrence_id in seen_visits:
+                errors.append(f"follow_up[{index}]: duplicate visit_occurrence_id")
+            seen_visits.add(follow_assessment.visit_occurrence_id)
     return errors, payload
 
 
@@ -99,6 +143,7 @@ def summarize(output_dir: Path) -> tuple[dict[str, Any], int]:
     statuses: Counter[str] = Counter()
     presence: Counter[str] = Counter()
     missing: Counter[str] = Counter()
+    exclusions: Counter[str] = Counter()
     failures: dict[str, list[str]] = {}
     for path in files:
         errors, payload = validate_output(path)
@@ -106,6 +151,9 @@ def summarize(output_dir: Path) -> tuple[dict[str, Any], int]:
             failures[path.name] = errors
             continue
         assert payload is not None
+        if payload.get("assessment") is None:
+            exclusions[payload.get("exclusion_reason") or "unknown"] += 1
+            continue
         scores = payload["scores"]
         assessment = payload["assessment"]
         grades[scores["aclf_grade"]] += 1
@@ -126,6 +174,7 @@ def summarize(output_dir: Path) -> tuple[dict[str, Any], int]:
         "aclf_presence": dict(presence),
         "data_quality": dict(quality),
         "missing_organs": dict(missing),
+        "exclusions": dict(exclusions),
         "validation_failures": failures,
         "runtime_error_files": [path.name for path in error_files],
     }

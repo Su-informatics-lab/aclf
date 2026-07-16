@@ -56,6 +56,8 @@ class FakeRAG:
                     "visit_occurrence_id": 10,
                     "start_date": "2026-01-01",
                     "end_date": "2026-01-05",
+                    "start_datetime": "2026-01-01 01:00:00",
+                    "end_datetime": "2026-01-05 10:00:00",
                 }
             ],
             "note_provenance": {"n_notes_found": 1},
@@ -102,15 +104,55 @@ async def test_agent_uses_separate_gather_and_assess_calls(monkeypatch):
 
 def test_episode_anchor_rejects_cross_admission_merge():
     payload = valid_payload()
-    payload["episode_end_date"] = "2026-02-05"
+    payload["episode_end_datetime"] = "2026-02-05 10:00:00"
     from schema import ACLFAssessment
 
     assessment = ACLFAssessment.model_validate(payload)
     error = _episode_anchor_error(
         assessment,
-        {"inpatient_episodes": [{"start_date": "2026-01-01", "end_date": "2026-01-05"}]},
+        {
+            "inpatient_episodes": [
+                {
+                    "visit_occurrence_id": 10,
+                    "start_date": "2026-01-01",
+                    "end_date": "2026-01-05",
+                    "start_datetime": "2026-01-01 01:00:00",
+                    "end_datetime": "2026-01-05 10:00:00",
+                }
+            ]
+        },
     )
-    assert error and "exactly match" in error
+    assert error and "must match" in error
+
+
+def test_episode_anchor_accepts_equivalent_iso_datetime_format():
+    from schema import ACLFAssessment
+
+    assessment = ACLFAssessment.model_validate(valid_payload())
+    error = _episode_anchor_error(
+        assessment,
+        {
+            "inpatient_episodes": [
+                {
+                    "visit_occurrence_id": 10,
+                    "start_datetime": "2026-01-01T01:00:00",
+                    "end_datetime": "2026-01-05T10:00:00",
+                }
+            ]
+        },
+    )
+    assert error is None
+
+
+def test_episode_anchor_rejects_value_at_exclusive_24h_boundary():
+    from schema import ACLFAssessment
+
+    payload = valid_payload()
+    payload["organs"][0]["peak_value_datetime"] = "2026-01-02 01:00:00"
+    assessment = ACLFAssessment.model_validate(payload)
+    context = FakeRAG().case_context()
+    error = _episode_anchor_error(assessment, context)
+    assert error and "[admission, admission + 24h)" in error
 
 
 def test_unretrieved_evidence_id_is_rejected():

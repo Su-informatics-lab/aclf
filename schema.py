@@ -12,6 +12,7 @@ OrganName = Literal[
 ]
 EvidenceSource = Literal["structured_ehr", "clinical_notes", "both", "none"]
 Confidence = Literal["high", "moderate", "low"]
+EligibilityStatus = Literal["yes", "no", "unknown"]
 
 ORGAN_ORDER: tuple[str, ...] = (
     "liver",
@@ -78,6 +79,9 @@ class OrganAssessment(StrictModel):
     peak_value_date: str | None = Field(
         description="ISO date for peak_value, or null when unknown."
     )
+    peak_value_datetime: str | None = Field(
+        description="ISO datetime for a structured numeric peak, or null."
+    )
     clinical_finding: str | None = Field(
         description=(
             "Worst non-numeric finding, such as HE grade III, sustained "
@@ -137,10 +141,10 @@ class OrganAssessment(StrictModel):
         if (
             self.organ in {"liver", "kidney", "coagulation"}
             and self.peak_value is not None
-            and self.peak_value_date is None
+            and (self.peak_value_date is None or self.peak_value_datetime is None)
         ):
             raise ValueError(
-                f"peak_value_date is required when numeric {self.organ} evidence is scored"
+                f"peak_value_date and peak_value_datetime are required when numeric {self.organ} evidence is scored"
             )
         return self
 
@@ -171,16 +175,101 @@ class Precipitant(StrictModel):
     confidence: Confidence = Field(description="Confidence in precipitant attribution.")
 
 
+class EligibilityCriterion(StrictModel):
+    """Evidence-grounded status for one study eligibility criterion."""
+
+    status: EligibilityStatus = Field(
+        description="yes/no/unknown; unknown is required when the chart cannot decide it."
+    )
+    reasoning: str = Field(
+        min_length=5, description="Concise explanation tied to retrieved evidence."
+    )
+    evidence_references: list[EvidenceReference] = Field(
+        default_factory=list,
+        description="Traceable evidence; may be empty only when status is unknown.",
+    )
+
+    @model_validator(mode="after")
+    def evidence_for_known_status(self) -> "EligibilityCriterion":
+        if self.status != "unknown" and not self.evidence_references:
+            raise ValueError("known eligibility status requires evidence")
+        return self
+
+
+class EpisodeEligibility(StrictModel):
+    """CANONIC/PREDICT-aligned eligibility information at admission."""
+
+    canonical_acute_decompensation: EligibilityCriterion
+    non_elective_admission: EligibilityCriterion
+    scheduled_procedure_or_treatment: EligibilityCriterion
+    prior_liver_transplant: EligibilityCriterion
+    hcc_outside_milan: EligibilityCriterion
+    hiv: EligibilityCriterion
+    immunosuppression: EligibilityCriterion
+    severe_extrahepatic_disease: EligibilityCriterion
+
+
+class PrognosticInputs(StrictModel):
+    """Additional admission-time inputs required by comparator scores."""
+
+    serum_albumin: float | None = Field(default=None, gt=0, description="Albumin in g/dL.")
+    albumin_datetime: str | None = Field(
+        default=None, description="ISO datetime of the admission albumin value."
+    )
+    ascites_severity: Literal["none", "mild", "moderate_severe", "unknown"] = Field(
+        description="Admission ascites severity for Child-Pugh scoring."
+    )
+    hepatic_encephalopathy_grade: int | None = Field(
+        default=None, ge=0, le=4, description="West Haven grade at admission."
+    )
+    renal_replacement_therapy: bool | None = Field(
+        default=None,
+        description="Dialysis/RRT at admission or at least twice in the preceding 7 days.",
+    )
+    evidence_references: list[EvidenceReference] = Field(
+        default_factory=list,
+        description="Evidence supporting albumin, ascites, HE and RRT inputs.",
+    )
+
+    @model_validator(mode="after")
+    def albumin_has_datetime(self) -> "PrognosticInputs":
+        if self.serum_albumin is not None and self.albumin_datetime is None:
+            raise ValueError("albumin_datetime is required when serum_albumin is present")
+        return self
+
+
 class ACLFAssessment(StrictModel):
     """Complete ACLF assessment for one patient and acute episode."""
 
     sample_id: str = Field(description="Persistent OMOP person identifier.")
+    assessment_timepoint: Literal["admission_baseline", "aclf_diagnosis", "follow_up"] = Field(
+        description="Prespecified prognostic time zero represented by this assessment."
+    )
+    visit_occurrence_id: int = Field(
+        description="Exact OMOP inpatient visit identifier for this assessment."
+    )
+    episode_start_datetime: str = Field(description="Exact inpatient admission datetime.")
+    episode_end_datetime: str = Field(description="Exact inpatient discharge datetime.")
+    baseline_window_start: str = Field(
+        description="ISO datetime equal to episode_start_datetime."
+    )
+    baseline_window_end: str = Field(
+        description="ISO datetime exactly 24 hours after baseline_window_start; exclusive."
+    )
+    eligibility: EpisodeEligibility
     assessment_date: str = Field(description="ISO date of assessment.")
     has_acute_decompensation: bool = Field(
         description="Whether new or worsening acute decompensation was documented."
     )
     decompensation_type: list[
-        Literal["ascites", "encephalopathy", "gi_hemorrhage", "jaundice", "other"]
+        Literal[
+            "ascites",
+            "encephalopathy",
+            "gi_hemorrhage",
+            "infection",
+            "jaundice",
+            "other",
+        ]
     ] = Field(description="Documented types of acute decompensation.")
     decompensation_evidence_references: list[EvidenceReference] = Field(
         description=(
@@ -204,6 +293,7 @@ class ACLFAssessment(StrictModel):
         default=None, gt=0, description="WBC count in 10^9/L closest to the episode."
     )
     wbc_date: str | None = Field(default=None, description="ISO date of WBC value.")
+    wbc_datetime: str | None = Field(default=None, description="ISO datetime of WBC value.")
     serum_sodium: float | None = Field(
         default=None,
         gt=80,
@@ -213,6 +303,10 @@ class ACLFAssessment(StrictModel):
     sodium_date: str | None = Field(
         default=None, description="ISO date of serum sodium value."
     )
+    sodium_datetime: str | None = Field(
+        default=None, description="ISO datetime of serum sodium value."
+    )
+    prognostic_inputs: PrognosticInputs
     clinical_summary: str = Field(
         min_length=20,
         description="Three-to-five sentence evidence-grounded acute episode summary.",
@@ -254,6 +348,23 @@ class ACLFAssessment(StrictModel):
         if self.has_acute_decompensation and not self.decompensation_evidence_references:
             raise ValueError(
                 "acute decompensation requires at least one evidence reference"
+            )
+        if self.wbc_count is not None and self.wbc_datetime is None:
+            raise ValueError("wbc_datetime is required when wbc_count is present")
+        if self.serum_sodium is not None and self.sodium_datetime is None:
+            raise ValueError("sodium_datetime is required when serum_sodium is present")
+        canonical_types = {"ascites", "encephalopathy", "gi_hemorrhage", "infection"}
+        if self.eligibility.canonical_acute_decompensation.status == "yes":
+            if not canonical_types.intersection(self.decompensation_type):
+                raise ValueError(
+                    "canonical acute decompensation requires ascites, encephalopathy, "
+                    "GI hemorrhage, or infection"
+                )
+        if self.has_acute_decompensation != (
+            self.eligibility.canonical_acute_decompensation.status == "yes"
+        ):
+            raise ValueError(
+                "has_acute_decompensation must agree with canonical_acute_decompensation"
             )
         return self
 
@@ -324,6 +435,9 @@ __all__ = [
     "ACLFAssessment",
     "OrganAssessment",
     "Precipitant",
+    "EligibilityCriterion",
+    "EpisodeEligibility",
+    "PrognosticInputs",
     "EvidenceReference",
     "ORGAN_ORDER",
     "build_format_instructions",

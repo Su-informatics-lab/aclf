@@ -15,24 +15,25 @@ def _positive(name: str, value: float) -> float:
 
 
 def compute_clif_c_aclf_score(of_score: int, age: float, wbc: float) -> float:
-    """Compute the CLIF-C ACLF prognostic score and round to one decimal."""
+    """Compute the published CLIF-C ACLF score, trimmed to 0-100."""
     if not 6 <= of_score <= 18:
         raise ValueError("of_score must be between 6 and 18")
     _positive("age", age)
     _positive("wbc", wbc)
-    return round(10 * (0.33 * of_score + 0.04 * age + 0.63 * math.log(wbc) - 2), 1)
+    raw = 10 * (0.33 * of_score + 0.04 * age + 0.63 * math.log(wbc) - 2)
+    return round(min(100.0, max(0.0, raw)), 1)
 
 
 def compute_clif_c_ad_score(
     age: float, cr: float, inr: float, wbc: float, na: float
 ) -> float:
-    """Compute the CLIF-C AD prognostic score and round to one decimal."""
+    """Compute the published CLIF-C AD score, trimmed to 0-100."""
     _positive("age", age)
     _positive("creatinine", cr)
     _positive("INR", inr)
     _positive("WBC", wbc)
     _positive("sodium", na)
-    return round(
+    raw = (
         10
         * (
             0.03 * age
@@ -41,9 +42,70 @@ def compute_clif_c_ad_score(
             + 0.88 * math.log(wbc)
             - 0.05 * na
             + 8
-        ),
-        1,
+        )
     )
+    return round(min(100.0, max(0.0, raw)), 1)
+
+
+def compute_meld(
+    bilirubin: float,
+    creatinine: float,
+    inr: float,
+    *,
+    dialysis: bool = False,
+) -> int:
+    """Compute the original UNOS MELD used by the CANONIC-era studies."""
+    for name, value in (("bilirubin", bilirubin), ("creatinine", creatinine), ("INR", inr)):
+        _positive(name, value)
+    bilirubin = max(1.0, float(bilirubin))
+    inr = max(1.0, float(inr))
+    creatinine = 4.0 if dialysis else min(4.0, max(1.0, float(creatinine)))
+    raw = (
+        3.78 * math.log(bilirubin)
+        + 11.2 * math.log(inr)
+        + 9.57 * math.log(creatinine)
+        + 6.43
+    )
+    return min(40, max(6, int(math.floor(raw + 0.5))))
+
+
+def compute_meld_na(meld: int, sodium: float) -> int:
+    """Compute Kim et al. 2008 MELD-Na used by the CLIF comparator studies.
+
+    This is the study-era equation cited by the CLIF-C AD paper, not the
+    later OPTN allocation policy label. Sodium is constrained to 125-137
+    mmol/L and the final score to 6-40.
+    """
+    if not 6 <= int(meld) <= 40:
+        raise ValueError("MELD must be between 6 and 40")
+    _positive("sodium", sodium)
+    sodium = min(137.0, max(125.0, float(sodium)))
+    raw = meld + 1.32 * (137 - sodium) - 0.033 * meld * (137 - sodium)
+    return min(40, max(6, int(math.floor(raw + 0.5))))
+
+
+def compute_child_pugh(
+    bilirubin: float,
+    albumin: float,
+    inr: float,
+    ascites_severity: str,
+    hepatic_encephalopathy_grade: int,
+) -> int:
+    """Compute conventional Child-Pugh (5-15); do not impute missing inputs."""
+    for name, value in (("bilirubin", bilirubin), ("albumin", albumin), ("INR", inr)):
+        _positive(name, value)
+    if ascites_severity not in {"none", "mild", "moderate_severe"}:
+        raise ValueError("ascites_severity must be none, mild, or moderate_severe")
+    if not 0 <= hepatic_encephalopathy_grade <= 4:
+        raise ValueError("hepatic_encephalopathy_grade must be between 0 and 4")
+    bilirubin_points = 1 if bilirubin < 2 else (2 if bilirubin <= 3 else 3)
+    albumin_points = 1 if albumin > 3.5 else (2 if albumin >= 2.8 else 3)
+    inr_points = 1 if inr < 1.7 else (2 if inr <= 2.3 else 3)
+    ascites_points = {"none": 1, "mild": 2, "moderate_severe": 3}[ascites_severity]
+    he_points = 1 if hepatic_encephalopathy_grade == 0 else (
+        2 if hepatic_encephalopathy_grade <= 2 else 3
+    )
+    return bilirubin_points + albumin_points + inr_points + ascites_points + he_points
 
 
 def _organ_value(assessment: ACLFAssessment, name: str) -> float | None:
@@ -83,6 +145,39 @@ def _grade_from_complete_scores(scores: dict[str, int]) -> str:
     return "3b"
 
 
+def _add_comparator_scores(base: dict[str, Any], assessment: ACLFAssessment) -> None:
+    bilirubin = _organ_value(assessment, "liver")
+    creatinine = _organ_value(assessment, "kidney")
+    inr = _organ_value(assessment, "coagulation")
+    inputs = assessment.prognostic_inputs
+    if bilirubin is not None and creatinine is not None and inr is not None:
+        meld = compute_meld(
+            float(bilirubin),
+            float(creatinine),
+            float(inr),
+            dialysis=inputs.renal_replacement_therapy is True,
+        )
+        base["meld_score"] = meld
+        if assessment.serum_sodium is not None:
+            base["meld_na_score"] = compute_meld_na(meld, assessment.serum_sodium)
+    if all(
+        value is not None
+        for value in (
+            bilirubin,
+            inr,
+            inputs.serum_albumin,
+            inputs.hepatic_encephalopathy_grade,
+        )
+    ) and inputs.ascites_severity != "unknown":
+        base["child_pugh_score"] = compute_child_pugh(
+            float(bilirubin),
+            float(inputs.serum_albumin),
+            float(inr),
+            inputs.ascites_severity,
+            int(inputs.hepatic_encephalopathy_grade),
+        )
+
+
 def score_aclf(assessment: ACLFAssessment) -> dict[str, Any]:
     """Grade ACLF from six organ assessments and compute applicable scores."""
     scores = {organ.organ: organ.clif_score for organ in assessment.organs}
@@ -106,6 +201,9 @@ def score_aclf(assessment: ACLFAssessment) -> dict[str, Any]:
         "aclf_present": None,
         "clif_c_aclf_score": None,
         "clif_c_ad_score": None,
+        "meld_score": None,
+        "meld_na_score": None,
+        "child_pugh_score": None,
         "predicted_28d_mortality": _mortality_label("indeterminate"),
     }
     if not assessment.has_acute_decompensation:
@@ -140,6 +238,7 @@ def score_aclf(assessment: ACLFAssessment) -> dict[str, Any]:
                     "dysfunctional_organs": dysfunctional,
                 }
             )
+        _add_comparator_scores(base, assessment)
         return base
     if missing:
         base["scoring_status"] = "indeterminate_missing_organ_data"
@@ -173,6 +272,7 @@ def score_aclf(assessment: ACLFAssessment) -> dict[str, Any]:
                 ),
             }
         )
+        _add_comparator_scores(base, assessment)
         return base
 
     typed_scores = {name: int(score) for name, score in scores.items() if score is not None}
@@ -229,7 +329,15 @@ def score_aclf(assessment: ACLFAssessment) -> dict[str, Any]:
                 float(assessment.wbc_count),
                 float(assessment.serum_sodium),
             )
+    _add_comparator_scores(base, assessment)
     return base
 
 
-__all__ = ["score_aclf", "compute_clif_c_aclf_score", "compute_clif_c_ad_score"]
+__all__ = [
+    "score_aclf",
+    "compute_clif_c_aclf_score",
+    "compute_clif_c_ad_score",
+    "compute_meld",
+    "compute_meld_na",
+    "compute_child_pugh",
+]

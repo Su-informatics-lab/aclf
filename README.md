@@ -36,15 +36,20 @@ grade.
 For each patient, the pipeline:
 
 1. links redacted notes to the persistent OMOP person identifier;
-2. ranks candidate inpatient episodes using bilirubin, creatinine, and INR;
-3. retrieves traceable evidence for the leading episodes;
-4. determines whether new or worsening acute decompensation occurred;
+2. orders inpatient episodes chronologically and selects the first eligible
+   non-elective acute-decompensation admission;
+3. retrieves traceable evidence tied to that exact visit;
+4. determines whether new or worsening ascites, hepatic encephalopathy,
+   gastrointestinal bleeding, or infection required admission;
 5. assesses all six EASL-CLIF organ systems;
 6. identifies supported precipitants, such as bacterial infection;
 7. validates every cited note and OMOP record ID against the collected source
    evidence; and
-8. applies deterministic Python scoring to produce ACLF presence, grade, and
-   prognostic scores when the required inputs are available.
+8. accepts baseline laboratory inputs only from admission to less than 24
+   hours after admission; and
+9. applies deterministic Python scoring to produce ACLF presence, grade,
+   CLIF-C ACLF, CLIF-C AD, MELD, study-era MELD-Na, and Child-Pugh scores when
+   every required input is available.
 
 The language model is used for evidence synthesis and structured extraction.
 It does **not** get to invent missing values or directly determine the final
@@ -56,6 +61,9 @@ The implementation intentionally favors an explicit “unknown” over an
 unsupported normal or abnormal result.
 
 - Evidence from different hospitalizations cannot be combined.
+- A future severe episode cannot cause an earlier, milder eligible admission
+  to be skipped.
+- A laboratory result at or after 24 hours is not a baseline value.
 - Stable chronic ascites or encephalopathy is not labeled acute decompensation.
 - Planned transplant admissions and postoperative findings are not mixed into
   native-liver ACLF.
@@ -68,7 +76,7 @@ unsupported normal or abnormal result.
 - If ACLF is definite but missing organs prevent an exact grade, the output
   reports a defensible grade range rather than guessing.
 
-## Smoke-test result
+## Initial phenotype smoke test
 
 The pipeline was tested on Quartz with CatChat `gpt-oss:120b` using two
 deliberately contrasting cases.
@@ -78,9 +86,34 @@ deliberately contrasting cases.
 | High-severity acute admission | ACLF present; three proven failures; grade bounded 3a–3b | Bilirubin 25.5 mg/dL, creatinine 4.26 mg/dL, and INR 3.85 established liver, kidney, and coagulation failure. The exact grade remained bounded because HE grade, MAP, and FiO2 were unavailable. |
 | Planned liver-transplant admission | No qualifying acute decompensation; no ACLF | The discharge summary documented no acute change. The pipeline did not convert peri-transplant abnormalities into native-liver ACLF. |
 
-Both outputs passed schema, temporal, deterministic-scoring, and source-citation
-validation. The remaining uncertainty reflects missing source data rather than
-values filled in by the model.
+These two outputs established that the earlier phenotype code could preserve
+missing data and distinguish an acute episode from a planned transplant. They
+are engineering smoke tests, not mortality-validation results. The current
+study-aligned version requires a new 10–20 patient schema smoke test before the
+locked mortality analysis.
+
+## Mortality validation design
+
+The repository now includes a separate, outcome-blinded validation workflow
+aligned to the clinical questions behind three published figures:
+
+- Figure 6 analogue: among patients with ACLF at the index admission, compare
+  admission CLIF-C ACLF, MELD, MELD-Na, and Child-Pugh for 28-day mortality.
+- Figure 5 analogue: among acute-decompensation admissions without ACLF,
+  compare CLIF-C AD and the same conventional scores for 90-day mortality.
+- Figure 1B analogue: describe 360-day mortality for SDC, UDC, pre-ACLF, and
+  baseline ACLF grades 1–3, with a separate day-90 landmark analysis.
+
+The language model never receives mortality or transplant outcomes. A stable
+70/30 patient split is created without outcome information. Only after all
+phenotypes are frozen does a separate program join EHR-recorded death and liver
+transplant dates. Liver transplant is treated as a competing event; the
+audience-facing bundle contains only aggregate figures and suppressed tables.
+
+This is an IU single-center, retrospective internal validation using the OMOP
+status “EHR record patient status Deceased.” Out-of-system deaths may be
+missed. The results therefore cannot be described as a direct replication of
+CANONIC or PREDICT, or as complete mortality ascertainment.
 
 ## What one output contains
 
@@ -90,21 +123,21 @@ Each patient JSON includes:
 - whether acute decompensation was documented and the supporting records;
 - one assessment for each of the six organ systems;
 - peak values, dates, units, note excerpts, and source record IDs;
+- the exact index visit, admission/discharge datetimes, and baseline 24-hour
+  window;
+- explicit yes/no/unknown eligibility criteria;
 - supported precipitant(s) and confidence;
 - data-quality and missing-evidence fields;
 - deterministic ACLF presence and exact or bounded grade;
 - CLIF-C ACLF or CLIF-C AD score when all required inputs are available; and
 - traceable source records for audit and reproducibility.
 
-## Clinical review task
+## What is shared with clinical reviewers
 
-The model is asked to review one patient with cirrhosis as a hepatology
-specialist: select one hospitalization with new or worsening acute
-decompensation, assess the six EASL-CLIF organ systems, identify supported
-precipitants, and cite the underlying clinical records. When required evidence
-is unavailable, the model must report the organ as indeterminate rather than
-assume a normal value. Deterministic Python code then assigns the final ACLF
-status and grade.
+Clinical reviewers receive this README and aggregate validation figures and
+tables. Patient identifiers, model prompts, internal instructions, retrieval
+traces, state dumps, and raw patient JSON are not part of the shareable bundle.
+Cells smaller than five are suppressed.
 
 ## Data and provenance
 
@@ -125,6 +158,8 @@ contract.
 | `agent.py` | Evidence-gathering and assessment workflow |
 | `run_aclf.py` | Batch runner and atomic per-patient output |
 | `validate.py` | Output, provenance, and deterministic-rescoring QC |
+| `analysis/build_validation_cohort.py` | Outcome join, trajectories, censoring, and auditable cohort tables |
+| `analysis/mortality_validation.R` | ROC, cumulative-incidence, Gray-test, and sensitivity outputs |
 | `prepare_ehr.sbatch` | Quartz job to build the roster-filtered EHR database |
 | `run_aclf.sbatch` | Quartz job to run CatChat phenotyping |
 
@@ -156,7 +191,14 @@ EXTRA_ARGS="--pid OMOP_PERSON_ID --no-skip-existing" sbatch run_aclf.sbatch
 Validate the outputs:
 
 ```bash
-python validate.py --output-dir results/aclf
+python validate.py --output-dir results/aclf_v2
+```
+
+Install the one project-local R dependency once, then run mortality analysis:
+
+```bash
+sbatch setup_mortality_r.sbatch
+sbatch run_mortality_validation.sbatch
 ```
 
 Run the local test suite:
@@ -166,9 +208,10 @@ python -m pytest -q -p no:cacheprovider
 python -m ruff check --no-cache .
 ```
 
-## Current interpretation
+## Required sequence before interpreting results
 
-The smoke tests show that the pipeline can distinguish a genuine high-severity
-acute episode from a planned transplant admission while preserving missing
-data and evidence provenance. The appropriate next step is a small blinded
-chart-review pilot before running and interpreting the complete cohort.
+Run a 10–20 patient outcome-blinded schema smoke test, review episode and
+baseline-window evidence on the development split, freeze the code and schema,
+and only then run the locked test analysis once. A ROC with fewer than 10 deaths
+or 10 non-deaths is reported as descriptive and is not called a successful
+validation.

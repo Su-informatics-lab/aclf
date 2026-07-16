@@ -17,6 +17,8 @@ LAB_CONCEPTS: dict[str, tuple[int, ...]] = {
     "wbc": (3010813, 3000905),
     "white blood cell count": (3010813, 3000905),
     "sodium": (3019550, 3000285),
+    # Verified in cirrhosis_regv20 v1 measurements on Quartz, 2026-07-15.
+    "albumin": (2212186, 3024561),
     "ammonia": (3011958,),
     "pao2": (3027801, 3027315, 3013702),
     "fio2": (3024882,),
@@ -29,6 +31,7 @@ CORE_LAB_ORDER = (
     "inr",
     "wbc",
     "sodium",
+    "albumin",
     "pao2",
     "fio2",
     "spo2",
@@ -136,6 +139,8 @@ class EHRBackend:
         concept: str,
         date_start: str | None = None,
         date_end: str | None = None,
+        datetime_start: str | None = None,
+        datetime_end: str | None = None,
         visit_occurrence_id: int | None = None,
         limit: int = 50,
     ) -> list[dict[str, Any]]:
@@ -157,6 +162,12 @@ class EHRBackend:
         where += self._date_clause(
             "measurement_date", date_start, date_end, params
         )
+        if datetime_start:
+            where += " AND measurement_datetime >= ?"
+            params.append(datetime_start)
+        if datetime_end:
+            where += " AND measurement_datetime < ?"
+            params.append(datetime_end)
         if visit_occurrence_id is not None:
             where += " AND visit_occurrence_id = ?"
             params.append(int(visit_occurrence_id))
@@ -321,8 +332,8 @@ class EHRBackend:
             for row in rows
         ]
 
-    def inpatient_episodes(self, limit: int = 20) -> list[dict[str, Any]]:
-        """Rank observed inpatient visits using a transparent three-lab proxy."""
+    def inpatient_episodes(self, limit: int = 100) -> list[dict[str, Any]]:
+        """Return inpatient visits chronologically for prospective index selection."""
         rows = self._get_db().execute(
             """
             SELECT v.visit_occurrence_id, v.visit_start_date, v.visit_end_date,
@@ -339,14 +350,7 @@ class EHRBackend:
              AND v.person_id = m.person_id
             WHERE v.person_id = ? AND v.visit_concept_id = 9201
             GROUP BY 1,2,3,4,5,6
-            ORDER BY
-              ((peak_bilirubin >= 12)::INTEGER
-               + (peak_creatinine >= 2)::INTEGER
-               + (peak_inr >= 2.5)::INTEGER) DESC,
-              ((peak_bilirubin >= 6)::INTEGER
-               + (peak_creatinine >= 1.5)::INTEGER
-               + (peak_inr >= 2)::INTEGER) DESC,
-              v.visit_start_date DESC
+            ORDER BY v.visit_start_datetime, v.visit_occurrence_id
             LIMIT ?
             """,
             [self.pid, max(1, min(limit, 100))],

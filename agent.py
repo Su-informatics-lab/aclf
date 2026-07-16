@@ -6,7 +6,7 @@ import asyncio
 import hashlib
 import json
 import logging
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from typing import Any, Callable, Type
 
 from openai import AsyncOpenAI
@@ -29,6 +29,15 @@ def _iso_date(value: str | None) -> date | None:
         return None
 
 
+def _iso_datetime(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
 def _episode_anchor_error(
     model: BaseModel, case_context: dict[str, Any]
 ) -> str | None:
@@ -36,41 +45,68 @@ def _episode_anchor_error(
     if not isinstance(model, ACLFAssessment):
         return None
     episodes = case_context.get("inpatient_episodes") or []
-    pairs = {
-        (str(item.get("start_date"))[:10], str(item.get("end_date"))[:10])
+    by_id = {
+        int(item["visit_occurrence_id"]): item
         for item in episodes
-        if item.get("start_date") and item.get("end_date")
+        if item.get("visit_occurrence_id") is not None
     }
-    chosen = (model.episode_start_date, model.episode_end_date)
-    if pairs and chosen not in pairs:
+    supplied = by_id.get(model.visit_occurrence_id)
+    if by_id and supplied is None:
         return (
-            "episode_start_date and episode_end_date must exactly match one supplied "
-            f"inpatient episode; got {chosen}, allowed={sorted(pairs)}"
+            f"visit_occurrence_id={model.visit_occurrence_id} was not supplied; "
+            f"allowed={sorted(by_id)}"
         )
+    if supplied:
+        expected = (
+            _iso_datetime(supplied.get("start_datetime")),
+            _iso_datetime(supplied.get("end_datetime")),
+        )
+        chosen = (
+            _iso_datetime(model.episode_start_datetime),
+            _iso_datetime(model.episode_end_datetime),
+        )
+        if None in expected or chosen != expected:
+            return (
+                f"episode datetimes must match visit {model.visit_occurrence_id}: "
+                f"{supplied.get('start_datetime')}, {supplied.get('end_datetime')}"
+            )
     start = _iso_date(model.episode_start_date)
     end = _iso_date(model.episode_end_date)
     assessed = _iso_date(model.assessment_date)
     if start and end and (assessed is None or not start <= assessed <= end):
         return "assessment_date must fall within the selected inpatient episode"
+    window_start = _iso_datetime(model.baseline_window_start)
+    window_end = _iso_datetime(model.baseline_window_end)
+    episode_start = _iso_datetime(model.episode_start_datetime)
+    if not window_start or not window_end or not episode_start:
+        return "episode and baseline window datetimes must be valid ISO datetimes"
+    if window_start != episode_start or window_end - window_start != timedelta(hours=24):
+        return "baseline window must be [episode_start_datetime, episode_start_datetime + 24h)"
     if start:
-        lower, upper = start - timedelta(days=7), start + timedelta(days=7)
-        dated_fields = [
-            (f"{organ.organ}.peak_value_date", organ.peak_value_date)
+        datetime_fields = [
+            (f"{organ.organ}.peak_value_datetime", organ.peak_value_datetime)
             for organ in model.organs
-            if organ.peak_value_date
+            if organ.peak_value_datetime
         ]
-        dated_fields.extend(
-            [("wbc_date", model.wbc_date), ("sodium_date", model.sodium_date)]
+        datetime_fields.extend(
+            [
+                ("wbc_datetime", model.wbc_datetime),
+                ("sodium_datetime", model.sodium_datetime),
+                ("albumin_datetime", model.prognostic_inputs.albumin_datetime),
+            ]
         )
         outside = [
             f"{name}={value}"
-            for name, value in dated_fields
-            if (parsed := _iso_date(value)) is not None
-            and not lower <= parsed <= upper
+            for name, value in datetime_fields
+            if value is not None
+            and (
+                (parsed := _iso_datetime(value)) is None
+                or not window_start <= parsed < window_end
+            )
         ]
         if outside:
             return (
-                "acute organ/prognostic values must be within +/-7 days of admission: "
+                "baseline organ/prognostic values must be within [admission, admission + 24h): "
                 + ", ".join(outside)
             )
     return None
@@ -82,6 +118,9 @@ def _assessment_references(model: ACLFAssessment):
         yield from organ.evidence_references
     for precipitant in model.precipitants:
         yield from precipitant.evidence_references
+    yield from model.prognostic_inputs.evidence_references
+    for criterion in type(model.eligibility).model_fields:
+        yield from getattr(model.eligibility, criterion).evidence_references
 
 
 def _retrieval_reference_error(
@@ -154,19 +193,21 @@ class ACLFAgent:
         rag: PatientRAG,
         max_rounds: int,
         seed: int,
+        case_context: dict[str, Any] | None = None,
     ) -> list[dict[str, Any]]:
-        case_context = rag.case_context()
+        case_context = case_context or rag.case_context()
         extraction = rag.get_extraction()
         evidence: list[dict[str, Any]] = []
-        for episode in (case_context.get("inpatient_episodes") or [])[:3]:
+        for episode in (case_context.get("inpatient_episodes") or [])[:5]:
             visit_id = episode.get("visit_occurrence_id")
-            start = _iso_date(episode.get("start_date"))
+            start = _iso_datetime(episode.get("start_datetime"))
             if visit_id is None or start is None:
                 continue
+            end = start + timedelta(hours=24)
             arguments = {
                 "concept": "aclf_core",
-                "date_start": start.isoformat(),
-                "date_end": (start + timedelta(days=7)).isoformat(),
+                "datetime_start": start.isoformat(sep=" "),
+                "datetime_end": end.isoformat(sep=" "),
                 "visit_occurrence_id": int(visit_id),
                 "limit": 50,
             }
@@ -243,13 +284,28 @@ class ACLFAgent:
                 )
         return evidence
 
-    async def assess(self, *, rag: PatientRAG, sample_id: str) -> ACLFAssessment:
-        seed = _stable_seed(sample_id, "aclf_assessment")
+    async def assess(
+        self,
+        *,
+        rag: PatientRAG,
+        sample_id: str,
+        target_episode: dict[str, Any] | None = None,
+        timepoint: str = "admission_baseline",
+    ) -> ACLFAssessment:
+        seed = _stable_seed(
+            sample_id,
+            target_episode and target_episode.get("visit_occurrence_id"),
+            timepoint,
+        )
         case_context = rag.case_context()
+        if target_episode is not None:
+            case_context = dict(case_context)
+            case_context["inpatient_episodes"] = [target_episode]
         evidence = await self._gather_evidence(
             rag,
             max_rounds=self._config.max_tool_rounds,
             seed=seed,
+            case_context=case_context,
         )
         allowed_source_ids = sorted(
             {
@@ -267,10 +323,16 @@ class ACLFAgent:
             + "\n\n=== ALLOWED EVIDENCE SOURCE IDS ===\n"
             + json.dumps(allowed_source_ids)
             + "\nEvery non-other evidence source_id must exactly match one ID above."
-            + "\n\nAssess exactly one supplied inpatient episode. Use the gathered "
-            "evidence to distinguish genuine new/worsening acute decompensation "
+            + f"\n\nRequired assessment_timepoint: {timepoint}. "
+            + (
+                "Assess the one supplied target visit exactly. "
+                if target_episode is not None
+                else "Select the earliest chronologic supplied visit that meets eligibility; do not select by severity. "
+            )
+            + "Use the gathered evidence to distinguish genuine new/worsening acute decompensation "
             "from stable chronic disease, planned transplantation, and postoperative "
-            "findings. Return all six organs in the canonical order."
+            "findings. Use only the admission-to-<24-hour window for prognostic inputs. "
+            "Return all six organs in the canonical order."
         )
         assessment = await self._validated_call(
             messages=[
@@ -282,7 +344,12 @@ class ACLFAgent:
             max_retries=self._config.max_retries,
             seed=seed + 100,
             semantic_validator=lambda model: (
-                _episode_anchor_error(model, case_context)
+                (
+                    f"assessment_timepoint must be {timepoint}"
+                    if getattr(model, "assessment_timepoint", None) != timepoint
+                    else None
+                )
+                or _episode_anchor_error(model, case_context)
                 or _retrieval_reference_error(model, rag.retrieval_trace)
             ),
         )

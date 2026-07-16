@@ -5,7 +5,14 @@ import math
 import pytest
 
 from schema import ACLFAssessment
-from scoring import compute_clif_c_aclf_score, compute_clif_c_ad_score, score_aclf
+from scoring import (
+    compute_child_pugh,
+    compute_clif_c_aclf_score,
+    compute_clif_c_ad_score,
+    compute_meld,
+    compute_meld_na,
+    score_aclf,
+)
 from tests.test_schema import valid_payload
 
 
@@ -113,3 +120,45 @@ def test_clif_c_ad_formula():
 def test_log_inputs_must_be_positive():
     with pytest.raises(ValueError):
         compute_clif_c_ad_score(60, 0, 1.4, 8, 135)
+
+
+def test_clif_scores_are_trimmed_to_published_range():
+    assert compute_clif_c_aclf_score(6, 1, 0.01) == 0.0
+    assert compute_clif_c_aclf_score(18, 120, 1000) == 100.0
+    assert compute_clif_c_ad_score(1, 0.01, 0.01, 0.01, 200) == 0.0
+    assert compute_clif_c_ad_score(120, 20, 10, 1000, 100) == 100.0
+
+
+def test_original_meld_bounds_inputs_and_total():
+    assert compute_meld(0.2, 0.3, 0.8) == 6
+    assert compute_meld(50, 10, 5) == 40
+    assert compute_meld(1, 1.1, 1, dialysis=True) == compute_meld(1, 4, 1)
+
+
+def test_kim_2008_meld_na_sodium_and_total_bounds():
+    # Sodium below 125 and above 137 are constrained before applying the equation.
+    assert compute_meld_na(20, 120) == compute_meld_na(20, 125)
+    assert compute_meld_na(20, 140) == compute_meld_na(20, 137) == 20
+    assert compute_meld_na(40, 125) == 40
+
+
+@pytest.mark.parametrize(
+    ("bilirubin", "albumin", "inr", "ascites", "he", "expected"),
+    [
+        (1.9, 3.6, 1.6, "none", 0, 5),
+        (2.0, 3.5, 1.7, "mild", 1, 10),
+        (3.1, 2.7, 2.4, "moderate_severe", 3, 15),
+    ],
+)
+def test_child_pugh_boundaries(bilirubin, albumin, inr, ascites, he, expected):
+    assert compute_child_pugh(bilirubin, albumin, inr, ascites, he) == expected
+
+
+def test_comparator_scores_are_null_when_required_input_is_missing():
+    payload = valid_payload()
+    payload["prognostic_inputs"]["serum_albumin"] = None
+    payload["prognostic_inputs"]["albumin_datetime"] = None
+    result = score_aclf(ACLFAssessment.model_validate(payload))
+    assert result["meld_score"] is not None
+    assert result["meld_na_score"] is not None
+    assert result["child_pugh_score"] is None

@@ -9,7 +9,7 @@ import csv
 import json
 import logging
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -24,6 +24,7 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_API_BASE = "https://catchat-api.msu.montana.edu/v1"
 DEFAULT_MODEL = "gpt-oss:120b"
+SCHEMA_VERSION = "2.0"
 
 
 def normalize_api_base(value: str) -> str:
@@ -69,6 +70,47 @@ def atomic_json(path: Path, payload: dict[str, Any]) -> None:
     temporary.replace(path)
 
 
+def assign_split(pid: int) -> str:
+    """Outcome-blind, stable 70/30 development/test split."""
+    import hashlib
+
+    digest = hashlib.sha256(f"aclf-v1:{int(pid)}".encode()).digest()
+    return "development" if int.from_bytes(digest[:8], "big") % 10 < 7 else "test"
+
+
+def current_output(path: Path) -> bool:
+    try:
+        return json.loads(path.read_text(encoding="utf-8")).get("schema_version") == SCHEMA_VERSION
+    except (OSError, json.JSONDecodeError):
+        return False
+
+
+def _parse_datetime(value: str) -> datetime:
+    return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+
+
+CONFIRMED_INDEX_EXCLUSIONS = (
+    "scheduled_procedure_or_treatment",
+    "prior_liver_transplant",
+    "hcc_outside_milan",
+    "hiv",
+    "immunosuppression",
+    "severe_extrahepatic_disease",
+)
+
+
+def index_exclusion_reason(assessment: Any) -> str | None:
+    eligibility = assessment.eligibility
+    if eligibility.canonical_acute_decompensation.status != "yes":
+        return "no_confirmed_canonical_acute_decompensation"
+    if eligibility.non_elective_admission.status == "no":
+        return "not_non_elective"
+    for criterion in CONFIRMED_INDEX_EXCLUSIONS:
+        if getattr(eligibility, criterion).status == "yes":
+            return f"confirmed_{criterion}"
+    return None
+
+
 async def process_patient(
     pid: int,
     *,
@@ -77,7 +119,7 @@ async def process_patient(
 ) -> dict[str, Any]:
     sample_id = str(pid)
     output_path = args.output_dir / f"{sample_id}.json"
-    if args.skip_existing and output_path.exists():
+    if args.skip_existing and output_path.exists() and current_output(output_path):
         return {"sample_id": sample_id, "status": "skipped", "path": str(output_path)}
     rag = PatientRAG(
         pid,
@@ -90,14 +132,107 @@ async def process_patient(
     )
     try:
         provenance = rag.case_context()
-        assessment = await agent.assess(rag=rag, sample_id=sample_id)
+        episodes = provenance.get("inpatient_episodes") or []
+        if not episodes:
+            payload = {
+                "schema_version": SCHEMA_VERSION,
+                "sample_id": sample_id,
+                "analysis_split": assign_split(pid),
+                "outcome_blinded": True,
+                "provenance": provenance,
+                "retrieval_trace": rag.retrieval_trace,
+                "assessment": None,
+                "scores": None,
+                "follow_up_assessments": [],
+                "exclusion_reason": "no_inpatient_visit",
+                "run_metadata": {
+                    "model": args.model,
+                    "api_base": normalize_api_base(args.api_base),
+                    "completed_at": datetime.now(timezone.utc).isoformat(),
+                },
+            }
+            atomic_json(output_path, payload)
+            return {"sample_id": sample_id, "status": "no_inpatient", "path": str(output_path)}
+        assessment = None
+        scores = None
+        selected = None
+        screened_episodes: list[dict[str, Any]] = []
+        for episode in episodes:
+            candidate = await agent.assess(
+                rag=rag,
+                sample_id=sample_id,
+                target_episode=episode,
+                timepoint="admission_baseline",
+            )
+            exclusion = index_exclusion_reason(candidate)
+            screened_episodes.append(
+                {
+                    "visit_occurrence_id": candidate.visit_occurrence_id,
+                    "episode_start_datetime": candidate.episode_start_datetime,
+                    "exclusion_reason": exclusion,
+                }
+            )
+            if exclusion is None:
+                assessment = candidate
+                scores = score_aclf(candidate)
+                selected = episode
+                break
+        if assessment is None or scores is None or selected is None:
+            payload = {
+                "schema_version": SCHEMA_VERSION,
+                "sample_id": sample_id,
+                "analysis_split": assign_split(pid),
+                "outcome_blinded": True,
+                "provenance": provenance,
+                "retrieval_trace": rag.retrieval_trace,
+                "assessment": None,
+                "scores": None,
+                "screened_episodes": screened_episodes,
+                "follow_up_assessments": [],
+                "exclusion_reason": "no_eligible_acute_decompensation_admission",
+                "run_metadata": {
+                    "model": args.model,
+                    "api_base": normalize_api_base(args.api_base),
+                    "completed_at": datetime.now(timezone.utc).isoformat(),
+                },
+            }
+            atomic_json(output_path, payload)
+            return {"sample_id": sample_id, "status": "no_eligible_index", "path": str(output_path)}
+        follow_up: list[dict[str, Any]] = []
+        if selected is not None and not args.no_follow_up:
+            index_start = _parse_datetime(selected["start_datetime"])
+            index_end = _parse_datetime(selected["end_datetime"])
+            horizon = index_start + timedelta(days=90)
+            candidates = [
+                episode
+                for episode in episodes
+                if index_end < _parse_datetime(episode["start_datetime"]) <= horizon
+            ]
+            for episode in candidates:
+                follow_assessment = await agent.assess(
+                    rag=rag,
+                    sample_id=sample_id,
+                    target_episode=episode,
+                    timepoint="follow_up",
+                )
+                follow_up.append(
+                    {
+                        "assessment": follow_assessment.model_dump(mode="json"),
+                        "scores": score_aclf(follow_assessment),
+                    }
+                )
         payload = {
-            "schema_version": "1.1",
+            "schema_version": SCHEMA_VERSION,
             "sample_id": sample_id,
+            "analysis_split": assign_split(pid),
+            "outcome_blinded": True,
             "provenance": provenance,
             "retrieval_trace": rag.retrieval_trace,
             "assessment": assessment.model_dump(mode="json"),
-            "scores": score_aclf(assessment),
+            "scores": scores,
+            "screened_episodes": screened_episodes,
+            "follow_up_assessments": follow_up,
+            "exclusion_reason": None,
             "run_metadata": {
                 "model": args.model,
                 "api_base": normalize_api_base(args.api_base),
@@ -161,6 +296,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--skip-existing", action="store_true", default=True)
     parser.add_argument("--no-skip-existing", dest="skip_existing", action="store_false")
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument(
+        "--no-follow-up",
+        action="store_true",
+        help="Assess the index admission only (for schema smoke tests).",
+    )
     return parser.parse_args(argv)
 
 

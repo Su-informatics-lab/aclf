@@ -33,7 +33,7 @@ TOOL_DEFS = [
             "name": "query_labs",
             "description": (
                 "Query timestamped structured labs. ACLF-relevant concepts include "
-                "bilirubin, creatinine, INR, PaO2, FiO2, SpO2, WBC, sodium, and ammonia. "
+                "bilirubin, creatinine, INR, PaO2, FiO2, SpO2, WBC, sodium, albumin, and ammonia. "
                 "Use concept='aclf_core' with a visit_occurrence_id and acute date "
                 "window to retrieve compact verified representatives in one call."
             ),
@@ -46,6 +46,14 @@ TOOL_DEFS = [
                     },
                     "date_start": {"type": "string"},
                     "date_end": {"type": "string"},
+                    "datetime_start": {
+                        "type": "string",
+                        "description": "Optional inclusive ISO datetime lower bound.",
+                    },
+                    "datetime_end": {
+                        "type": "string",
+                        "description": "Optional exclusive ISO datetime upper bound.",
+                    },
                     "limit": {"type": "integer", "default": 50},
                     "visit_occurrence_id": {
                         "type": "integer",
@@ -136,6 +144,8 @@ def dispatch_tool(rag: Any, tool_name: str, arguments: dict[str, Any]) -> str:
             top_k=arguments.get("top_k", 5),
             date_start=arguments.get("date_start"),
             date_end=arguments.get("date_end"),
+            datetime_start=arguments.get("datetime_start"),
+            datetime_end=arguments.get("datetime_end"),
         )
     elif tool_name == "query_labs":
         result = rag.query_labs(

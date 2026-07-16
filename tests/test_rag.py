@@ -27,7 +27,11 @@ def build_test_db(path: Path) -> None:
           (101, 1, 3010813, '2026-01-02', '2026-01-02 09:00:00', 8.0,
            'k/cumm', '1^^62', 'Leukocytes in blood', 10),
           (102, 1, 3010813, '2026-01-03', '2026-01-03 09:00:00', 12.0,
-           'k/cumm', '1^^62', 'Leukocytes in blood', 10);
+           'k/cumm', '1^^62', 'Leukocytes in blood', 10),
+          (103, 1, 3024561, '2026-01-01', '2026-01-01 04:00:00', 3.1,
+           'g/dL', '1751-7', 'Albumin in Serum or Plasma', 10),
+          (104, 1, 3016723, '2026-01-02', '2026-01-02 01:00:00', 4.9,
+           'mg/dL', '1^^256', 'Creatinine in serum', 10);
         CREATE TABLE drug_exposure(
             drug_exposure_id BIGINT, person_id BIGINT, drug_exposure_start_date DATE,
             drug_exposure_end_date DATE, drug_source_value VARCHAR,
@@ -76,8 +80,15 @@ def test_verified_lab_mapping_and_episode_query(tmp_path):
         assert ehr.query_labs("creatinine", visit_occurrence_id=999) == []
         assert len(ehr.query_labs("white_blood_cells")) == 2
         core = ehr.query_labs("aclf_core", visit_occurrence_id=10)
-        assert {row["core_lab"] for row in core} == {"creatinine", "wbc"}
+        assert {row["core_lab"] for row in core} == {"albumin", "creatinine", "wbc"}
         assert next(row for row in core if row["core_lab"] == "wbc")["value"] == 8.0
+        baseline = ehr.query_labs(
+            "aclf_core",
+            visit_occurrence_id=10,
+            datetime_start="2026-01-01 01:00:00",
+            datetime_end="2026-01-02 01:00:00",
+        )
+        assert {row["measurement_id"] for row in baseline} == {103}
     finally:
         ehr.close()
 
