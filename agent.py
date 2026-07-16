@@ -396,7 +396,7 @@ class ACLFAgent:
             ],
             response_model=EpisodeScreen,
             json_schema=build_json_schema(EpisodeScreen),
-            max_retries=min(2, self._config.max_retries),
+            max_retries=self._config.max_retries,
             seed=_stable_seed(sample_id, visit_id, "screen"),
             usage_recorder=getattr(rag, "record_llm_usage", None),
             semantic_validator=lambda model: (
@@ -556,6 +556,8 @@ class ACLFAgent:
                     max_retries,
                     exc,
                 )
+                if attempt + 1 < max_retries:
+                    await asyncio.sleep(min(8, 2**attempt))
         raise RuntimeError(
             f"All {max_retries} structured output attempts failed: {last_error}"
         )

@@ -379,7 +379,7 @@ def main(argv: list[str] | None = None) -> None:
         base_url=normalize_api_base(args.api_base),
         api_key=load_api_key(args.api_key),
         timeout=1800.0,
-        max_retries=0,
+        max_retries=2,
     )
     results = asyncio.run(run_batch(patient_ids, client=client, config=config, args=args))
     counts: dict[str, int] = {}
