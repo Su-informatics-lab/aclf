@@ -205,14 +205,16 @@ def _stable_seed(*parts: Any) -> int:
     return int(digest, 16) % (2**31)
 
 
-def _format_evidence_context(evidence: list[dict[str, Any]]) -> str:
+def _format_evidence_context(
+    evidence: list[dict[str, Any]], max_result_chars: int = 8000
+) -> str:
     if not evidence:
         return "(No additional evidence was retrieved.)"
     sections = []
     for item in evidence:
         result = str(item.get("result", ""))
-        if len(result) > 8000:
-            result = result[:8000] + "... [truncated]"
+        if len(result) > max_result_chars:
+            result = result[:max_result_chars] + "... [truncated]"
         sections.append(
             f"[{item.get('tool')}({json.dumps(item.get('args', {}), default=str)})]\n{result}"
         )
@@ -354,18 +356,30 @@ class ACLFAgent:
             "immunosuppression severe comorbidity"
         )
         calls = [
-            ("search_notes", rag.search_notes, {"query": query, "top_k": 12, "date_start": start_date, "date_end": end_date}),
+            ("search_notes", rag.search_notes, {"query": query, "top_k": 5, "date_start": start_date, "date_end": end_date}),
             ("query_conditions", rag.query_conditions, {"date_start": start_date, "date_end": end_date, "visit_occurrence_id": visit_id}),
             ("query_procedures", rag.query_procedures, {"date_start": start_date, "date_end": end_date, "visit_occurrence_id": visit_id}),
             ("query_medications", rag.query_medications, {"date_start": start_date, "date_end": end_date, "visit_occurrence_id": visit_id}),
         ]
         evidence: list[dict[str, Any]] = []
+        screen_terms = (
+            "ascites", "encephal", "infect", "sepsis", "bleed", "hemorr", "melena",
+            "transplant", "surgery", "procedure", "postop", "hcc", "carcinoma", "hiv",
+            "immunosupp", "lactulose", "rifaximin", "antibiotic", "paracentesis",
+        )
         for name, function, arguments in calls:
             try:
                 result = await asyncio.to_thread(function, **arguments)
             except Exception as exc:
                 logger.warning("Eligibility screen %s failed for visit %s: %s", name, visit_id, exc)
                 result = {"error": f"{type(exc).__name__}: {exc}"}
+            if isinstance(result, list) and name != "search_notes":
+                relevant = [
+                    row
+                    for row in result
+                    if any(term in json.dumps(row, default=str).lower() for term in screen_terms)
+                ]
+                result = (relevant or result)[:25]
             evidence.append(
                 {
                     "tool": name,
@@ -385,7 +399,7 @@ class ACLFAgent:
             "=== TARGET EPISODE ===\n"
             + json.dumps(episode, indent=2, default=str)
             + "\n\n=== SCREEN EVIDENCE ===\n"
-            + _format_evidence_context(evidence)
+            + _format_evidence_context(evidence, max_result_chars=2500)
             + "\n\n=== ALLOWED EVIDENCE SOURCE IDS ===\n"
             + json.dumps(allowed_source_ids)
         )
