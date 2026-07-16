@@ -5,7 +5,7 @@ import copy
 import pytest
 from pydantic import ValidationError
 
-from schema import ACLFAssessment
+from schema import ACLFAssessment, EpisodeScreen
 
 
 def valid_payload(scores: dict[str, int | None] | None = None) -> dict:
@@ -259,3 +259,20 @@ def test_wbc_and_sodium_without_datetime_are_null_not_imputed():
     assessment = ACLFAssessment.model_validate(payload)
     assert assessment.wbc_count is None
     assert assessment.serum_sodium is None
+
+
+def test_episode_screen_normalizes_unsupported_exclusion():
+    payload = valid_payload()
+    screen = EpisodeScreen.model_validate(
+        {
+            "sample_id": payload["sample_id"],
+            "visit_occurrence_id": payload["visit_occurrence_id"],
+            "episode_start_datetime": payload["episode_start_datetime"],
+            "episode_end_datetime": payload["episode_end_datetime"],
+            "eligibility": payload["eligibility"],
+            "decompensation_type": ["ascites"],
+            "evidence_references": payload["decompensation_evidence_references"],
+            "summary": "New ascites required hospital admission.",
+        }
+    )
+    assert screen.eligibility.hiv.status == "unknown"

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from schema import ACLFAssessment, build_format_instructions
+from schema import ACLFAssessment, EpisodeScreen, build_format_instructions
 
 REFERENCE_PATH = Path(__file__).resolve().parent / "docs" / "ACLF_CLINICAL_REFERENCE.md"
 
@@ -109,6 +109,26 @@ evidence. Avoid these normalizations by returning null/unknown yourself.
 {format_instructions}
 """
 
+SCREEN_SYSTEM_TEMPLATE = """\
+You are screening exactly one cirrhosis inpatient visit for study eligibility.
+This is a chronological screen, not a severity assessment. Confirm canonical
+acute decompensation only when retrieved evidence shows new or worsening
+ascites, hepatic encephalopathy, gastrointestinal luminal bleeding, or
+infection requiring this hospitalization. Stable chronic disease, jaundice
+alone, postoperative abnormalities, planned surgery/treatment, and planned
+transplant admission are not qualifying acute decompensation.
+
+Record non-elective admission and each exclusion as yes, no, or unknown:
+scheduled procedure/treatment, prior liver transplant, HCC outside Milan, HIV,
+immunosuppression, and severe chronic extrahepatic disease. A yes or no requires
+a retrieved source record; otherwise use unknown. Confirmed exclusions are not
+silently omitted. Copy the supplied visit ID and exact admission/discharge
+datetimes. Use only the supplied patient-scoped evidence and source IDs.
+
+=== OUTPUT CONTRACT ===
+{format_instructions}
+"""
+
 
 def load_clinical_reference(path: Path | None = None) -> str:
     reference = Path(path or REFERENCE_PATH)
@@ -124,4 +144,15 @@ def build_assess_system(reference_path: Path | None = None) -> str:
     )
 
 
-__all__ = ["GATHER_SYSTEM", "build_assess_system", "load_clinical_reference"]
+def build_screen_system() -> str:
+    return SCREEN_SYSTEM_TEMPLATE.format(
+        format_instructions=build_format_instructions(EpisodeScreen)
+    )
+
+
+__all__ = [
+    "GATHER_SYSTEM",
+    "build_assess_system",
+    "build_screen_system",
+    "load_clinical_reference",
+]

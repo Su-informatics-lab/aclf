@@ -102,6 +102,46 @@ async def test_agent_uses_separate_gather_and_assess_calls(monkeypatch):
     assert '"1001"' in completions.calls[-1]["messages"][1]["content"]
 
 
+@pytest.mark.asyncio
+async def test_episode_screen_uses_one_structured_call(monkeypatch):
+    payload = valid_payload()
+    screen_payload = {
+        "sample_id": payload["sample_id"],
+        "visit_occurrence_id": payload["visit_occurrence_id"],
+        "episode_start_datetime": payload["episode_start_datetime"],
+        "episode_end_datetime": payload["episode_end_datetime"],
+        "eligibility": payload["eligibility"],
+        "decompensation_type": ["ascites"],
+        "evidence_references": payload["decompensation_evidence_references"],
+        "summary": "New ascites required hospital admission.",
+    }
+    completions = FakeCompletions([FakeMessage(content=json.dumps(screen_payload))])
+    client = SimpleNamespace(chat=SimpleNamespace(completions=completions))
+    monkeypatch.setattr("agent.build_screen_system", lambda: "screen system")
+    agent = ACLFAgent(client=client, model="gpt-oss:120b", config=ACLFConfig())
+
+    class ScreenRAG(FakeRAG):
+        def search_notes(self, **kwargs):
+            return []
+
+        def query_conditions(self, **kwargs):
+            return []
+
+        def query_procedures(self, **kwargs):
+            return []
+
+        def query_medications(self, **kwargs):
+            return []
+
+    episode = ScreenRAG().case_context()["inpatient_episodes"][0]
+    result = await agent.screen_episode(
+        rag=ScreenRAG(), sample_id=str(FakeRAG.pid), episode=episode
+    )
+    assert result.visit_occurrence_id == 10
+    assert len(completions.calls) == 1
+    assert "tools" not in completions.calls[0]
+
+
 def test_episode_anchor_rejects_cross_admission_merge():
     payload = valid_payload()
     payload["episode_end_datetime"] = "2026-02-05 10:00:00"

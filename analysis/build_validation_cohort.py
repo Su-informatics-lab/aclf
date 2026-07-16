@@ -216,7 +216,9 @@ def load_frozen_assessments(directory: Path) -> tuple[list[dict[str, Any]], Coun
             "meld_na_score": scores.get("meld_na_score"),
             "child_pugh_score": scores.get("child_pugh_score"),
             "data_quality": assessment.get("data_quality"),
-            "n_followup_readmissions_90d": len(followups),
+            "n_followup_readmissions_90d": len(
+                payload.get("follow_up_visits_90d") or followups
+            ),
             "incident_aclf_date": first_incident[0].isoformat() if first_incident else None,
             "incident_clif_c_aclf_score": (
                 first_incident[1].get("clif_c_aclf_score") if first_incident else None

@@ -171,20 +171,31 @@ async def process_patient(
         selected = None
         screened_episodes: list[dict[str, Any]] = []
         for episode in episodes:
+            screen = await agent.screen_episode(
+                rag=rag,
+                sample_id=sample_id,
+                episode=episode,
+            )
+            exclusion = index_exclusion_reason(screen)
+            screen_summary = {
+                "visit_occurrence_id": screen.visit_occurrence_id,
+                "episode_start_datetime": screen.episode_start_datetime,
+                "exclusion_reason": exclusion,
+                "normalization_warnings": screen.normalization_warnings,
+            }
+            screened_episodes.append(screen_summary)
+            if exclusion is not None:
+                continue
             candidate = await agent.assess(
                 rag=rag,
                 sample_id=sample_id,
                 target_episode=episode,
                 timepoint="admission_baseline",
+                eligibility_screen=screen,
             )
             exclusion = index_exclusion_reason(candidate)
-            screened_episodes.append(
-                {
-                    "visit_occurrence_id": candidate.visit_occurrence_id,
-                    "episode_start_datetime": candidate.episode_start_datetime,
-                    "exclusion_reason": exclusion,
-                }
-            )
+            screen_summary["full_assessment_exclusion_reason"] = exclusion
+            screen_summary["exclusion_reason"] = exclusion
             if exclusion is None:
                 assessment = candidate
                 scores = score_aclf(candidate)
@@ -213,6 +224,7 @@ async def process_patient(
             atomic_json(output_path, payload)
             return {"sample_id": sample_id, "status": "no_eligible_index", "path": str(output_path)}
         follow_up: list[dict[str, Any]] = []
+        follow_up_visits: list[dict[str, Any]] = []
         if selected is not None and not args.no_follow_up:
             index_start = _parse_datetime(selected["start_datetime"])
             index_end = _parse_datetime(selected["end_datetime"])
@@ -223,11 +235,27 @@ async def process_patient(
                 if index_end < _parse_datetime(episode["start_datetime"]) <= horizon
             ]
             for episode in candidates:
+                screen = await agent.screen_episode(
+                    rag=rag,
+                    sample_id=sample_id,
+                    episode=episode,
+                )
+                exclusion = index_exclusion_reason(screen)
+                follow_up_visits.append(
+                    {
+                        "visit_occurrence_id": screen.visit_occurrence_id,
+                        "episode_start_datetime": screen.episode_start_datetime,
+                        "exclusion_reason": exclusion,
+                    }
+                )
+                if exclusion is not None:
+                    continue
                 follow_assessment = await agent.assess(
                     rag=rag,
                     sample_id=sample_id,
                     target_episode=episode,
                     timepoint="follow_up",
+                    eligibility_screen=screen,
                 )
                 follow_up.append(
                     {
@@ -246,6 +274,7 @@ async def process_patient(
             "scores": scores,
             "screened_episodes": screened_episodes,
             "follow_up_assessments": follow_up,
+            "follow_up_visits_90d": follow_up_visits,
             "exclusion_reason": None,
             "run_metadata": {
                 "model": args.model,

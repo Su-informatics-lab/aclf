@@ -13,9 +13,9 @@ from openai import AsyncOpenAI
 from pydantic import BaseModel, ValidationError
 
 from config import ACLFConfig
-from instructions import GATHER_SYSTEM, build_assess_system
+from instructions import GATHER_SYSTEM, build_assess_system, build_screen_system
 from rag import TOOL_DEFS, PatientRAG, dispatch_tool
-from schema import ACLFAssessment, build_json_schema
+from schema import ACLFAssessment, EpisodeScreen, build_json_schema
 
 logger = logging.getLogger(__name__)
 
@@ -152,6 +152,51 @@ def _retrieval_reference_error(
             + allowed_text
         )
     return None
+
+
+def _screen_reference_error(
+    model: BaseModel, retrieval_trace: list[dict[str, Any]]
+) -> str | None:
+    if not isinstance(model, EpisodeScreen):
+        return None
+    allowed = {
+        str(source_id)
+        for item in retrieval_trace
+        for source_id in (item.get("source_ids") or [])
+    }
+    references = list(model.evidence_references)
+    for criterion in type(model.eligibility).model_fields:
+        references.extend(getattr(model.eligibility, criterion).evidence_references)
+    unsupported = sorted(
+        {
+            str(reference.source_id)
+            for reference in references
+            if reference.source_id is not None
+            and reference.source_type != "other"
+            and str(reference.source_id) not in allowed
+        }
+    )
+    return (
+        "screen evidence source_ids were not retrieved: " + ", ".join(unsupported)
+        if unsupported
+        else None
+    )
+
+
+def _screen_anchor_error(model: BaseModel, episode: dict[str, Any]) -> str | None:
+    if not isinstance(model, EpisodeScreen):
+        return None
+    if model.visit_occurrence_id != int(episode["visit_occurrence_id"]):
+        return "screen visit_occurrence_id must match the supplied visit"
+    expected = (
+        _iso_datetime(episode.get("start_datetime")),
+        _iso_datetime(episode.get("end_datetime")),
+    )
+    observed = (
+        _iso_datetime(model.episode_start_datetime),
+        _iso_datetime(model.episode_end_datetime),
+    )
+    return "screen episode datetimes must match the supplied visit" if observed != expected else None
 
 
 def _stable_seed(*parts: Any) -> int:
@@ -292,6 +337,76 @@ class ACLFAgent:
                 )
         return evidence
 
+    async def screen_episode(
+        self,
+        *,
+        rag: PatientRAG,
+        sample_id: str,
+        episode: dict[str, Any],
+    ) -> EpisodeScreen:
+        """One-call eligibility screen used before expensive organ assessment."""
+        start_date = str(episode.get("start_date") or episode.get("start_datetime"))[:10]
+        end_date = str(episode.get("end_date") or episode.get("end_datetime"))[:10]
+        visit_id = int(episode["visit_occurrence_id"])
+        query = (
+            "new worsening ascites hepatic encephalopathy gastrointestinal bleeding "
+            "infection admission planned procedure transplant postoperative HIV HCC "
+            "immunosuppression severe comorbidity"
+        )
+        calls = [
+            ("search_notes", rag.search_notes, {"query": query, "top_k": 12, "date_start": start_date, "date_end": end_date}),
+            ("query_conditions", rag.query_conditions, {"date_start": start_date, "date_end": end_date, "visit_occurrence_id": visit_id}),
+            ("query_procedures", rag.query_procedures, {"date_start": start_date, "date_end": end_date, "visit_occurrence_id": visit_id}),
+            ("query_medications", rag.query_medications, {"date_start": start_date, "date_end": end_date, "visit_occurrence_id": visit_id}),
+        ]
+        evidence: list[dict[str, Any]] = []
+        for name, function, arguments in calls:
+            try:
+                result = await asyncio.to_thread(function, **arguments)
+            except Exception as exc:
+                logger.warning("Eligibility screen %s failed for visit %s: %s", name, visit_id, exc)
+                result = {"error": f"{type(exc).__name__}: {exc}"}
+            evidence.append(
+                {
+                    "tool": name,
+                    "args": arguments,
+                    "result": json.dumps(result, default=str, ensure_ascii=False),
+                }
+            )
+        allowed_source_ids = sorted(
+            {
+                str(source_id)
+                for item in rag.retrieval_trace
+                for source_id in (item.get("source_ids") or [])
+            }
+        )
+        prompt = (
+            f"=== CANONICAL SAMPLE ID ===\n{sample_id}\n\n"
+            "=== TARGET EPISODE ===\n"
+            + json.dumps(episode, indent=2, default=str)
+            + "\n\n=== SCREEN EVIDENCE ===\n"
+            + _format_evidence_context(evidence)
+            + "\n\n=== ALLOWED EVIDENCE SOURCE IDS ===\n"
+            + json.dumps(allowed_source_ids)
+        )
+        screen = await self._validated_call(
+            messages=[
+                {"role": "system", "content": build_screen_system()},
+                {"role": "user", "content": prompt},
+            ],
+            response_model=EpisodeScreen,
+            json_schema=build_json_schema(EpisodeScreen),
+            max_retries=min(2, self._config.max_retries),
+            seed=_stable_seed(sample_id, visit_id, "screen"),
+            usage_recorder=getattr(rag, "record_llm_usage", None),
+            semantic_validator=lambda model: (
+                _screen_anchor_error(model, episode)
+                or _screen_reference_error(model, rag.retrieval_trace)
+            ),
+        )
+        screen.sample_id = sample_id
+        return screen
+
     async def assess(
         self,
         *,
@@ -299,6 +414,7 @@ class ACLFAgent:
         sample_id: str,
         target_episode: dict[str, Any] | None = None,
         timepoint: str = "admission_baseline",
+        eligibility_screen: EpisodeScreen | None = None,
     ) -> ACLFAssessment:
         seed = _stable_seed(
             sample_id,
@@ -309,6 +425,9 @@ class ACLFAgent:
         if target_episode is not None:
             case_context = dict(case_context)
             case_context["inpatient_episodes"] = [target_episode]
+        if eligibility_screen is not None:
+            case_context = dict(case_context)
+            case_context["eligibility_screen"] = eligibility_screen.model_dump(mode="json")
         evidence = await self._gather_evidence(
             rag,
             max_rounds=self._config.max_tool_rounds,
@@ -448,4 +567,6 @@ __all__ = [
     "_format_evidence_context",
     "_episode_anchor_error",
     "_retrieval_reference_error",
+    "_screen_anchor_error",
+    "_screen_reference_error",
 ]

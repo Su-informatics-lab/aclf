@@ -210,6 +210,69 @@ class EpisodeEligibility(StrictModel):
     severe_extrahepatic_disease: EligibilityCriterion
 
 
+class EpisodeScreen(StrictModel):
+    """Lightweight chronological eligibility screen before full organ assessment."""
+
+    sample_id: str
+    visit_occurrence_id: int
+    episode_start_datetime: str
+    episode_end_datetime: str
+    eligibility: EpisodeEligibility
+    decompensation_type: list[
+        Literal["ascites", "encephalopathy", "gi_hemorrhage", "infection"]
+    ]
+    evidence_references: list[EvidenceReference]
+    summary: str = Field(min_length=10)
+    normalization_warnings: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_unsupported_screen_claims(cls, raw: Any) -> Any:
+        if not isinstance(raw, dict):
+            return raw
+        data = dict(raw)
+        warnings = list(data.get("normalization_warnings") or [])
+        eligibility = {
+            name: dict(value) if isinstance(value, dict) else value
+            for name, value in (data.get("eligibility") or {}).items()
+        }
+        canonical = eligibility.get("canonical_acute_decompensation")
+        screen_refs = list(data.get("evidence_references") or [])
+        if (
+            isinstance(canonical, dict)
+            and canonical.get("status") == "yes"
+            and not canonical.get("evidence_references")
+            and screen_refs
+        ):
+            canonical["evidence_references"] = screen_refs
+            warnings.append("canonical acute decompensation reused screen evidence")
+        for name, criterion in eligibility.items():
+            if (
+                isinstance(criterion, dict)
+                and criterion.get("status") in {"yes", "no"}
+                and not criterion.get("evidence_references")
+            ):
+                prior = criterion.get("status")
+                criterion["status"] = "unknown"
+                criterion["reasoning"] = (
+                    f"Unsupported {prior} normalized to unknown: "
+                    + str(criterion.get("reasoning") or "no traceable evidence")
+                )
+                warnings.append(f"eligibility.{name}: unsupported {prior} -> unknown")
+        data["eligibility"] = eligibility
+        if isinstance(canonical, dict) and canonical.get("status") != "yes":
+            data["decompensation_type"] = []
+        data["normalization_warnings"] = list(dict.fromkeys(warnings))
+        return data
+
+    @model_validator(mode="after")
+    def validate_canonical_screen(self) -> "EpisodeScreen":
+        canonical = self.eligibility.canonical_acute_decompensation.status == "yes"
+        if canonical and not self.decompensation_type:
+            raise ValueError("confirmed acute decompensation requires a canonical type")
+        return self
+
+
 class PrognosticInputs(StrictModel):
     """Additional admission-time inputs required by comparator scores."""
 
@@ -557,6 +620,7 @@ __all__ = [
     "Precipitant",
     "EligibilityCriterion",
     "EpisodeEligibility",
+    "EpisodeScreen",
     "PrognosticInputs",
     "EvidenceReference",
     "ORGAN_ORDER",
